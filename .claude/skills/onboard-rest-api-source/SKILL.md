@@ -56,7 +56,10 @@ Ask for anything not already given, **all at once**, then stop asking:
    re-fetched window, `merge` for incremental upserts, `append` for immutable
    events).
 5. **Incremental cursor**, if any — the field and its format.
-6. **Schedule** — cron.
+6. **Schedule** — cron. Check what else already calls the same host and give
+   this source its own hour. Two DAGs sharing a slot is what makes an API 500
+   under concurrent load, and the trigger is concurrency rather than the
+   request quota. NASA slots in use: 06:00 apod, 07:00 donki, 08:00 neo_feed.
 7. **Credential** — the Airflow Variable name to read the key from.
 
 Prefer authoritative sources for API behaviour: the vendor's own docs, not

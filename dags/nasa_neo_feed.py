@@ -62,7 +62,18 @@ render_config = RenderConfig(
 
 @dag(
     dag_id="nasa_neo_feed",
-    schedule="0 7 * * *",
+    # 08:00. Every DAG that calls api.nasa.gov gets its own hour, because that
+    # API returns intermittent 500s when several requests land at once:
+    #
+    #   06:00  nasa_apod    1 request
+    #   07:00  nasa_donki  11 requests
+    #   08:00  nasa_neo_feed 1 request
+    #
+    # This was moved off 07:00 on 2026-07-28, where it collided with nasa_donki
+    # — both using the same NASA_API_KEY. Note the constraint is NOT the request
+    # quota: ~13 calls a day against a 1,000/hour limit is nowhere near it. It is
+    # concurrency. Keep new NASA sources on their own hour.
+    schedule="0 8 * * *",
     start_date=datetime(2026, 1, 1),
     catchup=False,
     # One run at a time. Concurrent runs share the same dlt state directory and

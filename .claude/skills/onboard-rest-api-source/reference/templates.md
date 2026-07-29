@@ -281,6 +281,10 @@ render_config = RenderConfig(
 
 @dag(
     dag_id="<source>",
+    # Give this source its own hour if anything else already calls the same
+    # host. Sharing a slot is what makes an API 500 under concurrent load — the
+    # constraint is usually concurrency, not the request quota. Current NASA
+    # slots: 06:00 apod, 07:00 donki, 08:00 neo_feed.
     schedule="<cron>",
     start_date=datetime(2026, 1, 1),
     catchup=False,
