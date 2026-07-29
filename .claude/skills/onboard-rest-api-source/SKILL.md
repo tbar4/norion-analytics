@@ -226,6 +226,30 @@ Cubes are defined over dbt **marts**, never raw tables.
    **Do not try pgAdmin against Cube** — it cannot connect at all, for reasons
    in `reference/platform.md`. pgAdmin is for `warehouse` on `:5432` only.
    Metabase is no longer used; do not build anything against it.
+5. Add a **pre-aggregation** if the mart is large enough to warrant one. This
+   is what the Cube Store cluster exists for; a cube without one makes Cube a
+   hop that adds nothing.
+
+   List only **additive** measures — `count`, `sum`, `min`, `max`. Additivity
+   is what lets a single `granularity: day` rollup also answer monthly and
+   yearly questions. Exact `count_distinct` and `avg` are non-additive and
+   would pin the rollup to exactly its own dimensions; leave them out and let
+   those queries fall through to Postgres.
+
+   Do NOT add one to a small mart. `apod_daily` has 365 rows and deliberately
+   has none — a rollup there is ceremony, not caching.
+
+   Verify it is actually USED, never assume. `/v1/sql` returns the query plan,
+   and the pre-aggregation table name must appear in the FROM clause:
+
+   ```bash
+   curl -s -G 'http://10.0.0.50:4001/cubejs-api/v1/sql' \
+     --data-urlencode 'query={"measures":["<mart>.count"],"timeDimensions":[{"dimension":"<mart>.<time>","granularity":"month"}]}'
+   ```
+
+   On `/v1/load`, `external: true` with `extDbType: cubestore` means Cube Store
+   served it. Note `usedPreAggregations` can come back null on a cache hit even
+   when the rollup is working — the `/v1/sql` plan is the reliable check.
 
 ## Step 7 — Report
 
