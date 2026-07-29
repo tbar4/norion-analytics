@@ -8,6 +8,10 @@
 # `sql_table` is schema-qualified because Cube connects to the `warehouse`
 # database with no search_path set — an unqualified name would resolve to
 # public and fail.
+#
+# Deploy this to prod with `~/docker/cube/deploy.sh`, never by hand. Prod reads
+# a separate checkout, so editing here changes dev only — and a prod that is
+# behind looks identical to one that is current.
 
 cubes:
   - name: apod_daily
