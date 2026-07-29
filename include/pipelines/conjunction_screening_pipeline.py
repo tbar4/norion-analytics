@@ -246,18 +246,54 @@ _AS_OF_FILTER = "where epoch <= %(as_of)s"
 # one ever could have been.
 HISTORY_SQL = """
 select
-    norad_cat_id, epoch, mean_motion_rev_per_day, eccentricity, inclination_deg,
-    raan_deg, arg_of_pericenter_deg, mean_anomaly_deg, bstar, mean_motion_dot,
-    mean_motion_ddot, ephemeris_type, classification_type, element_set_no,
-    rev_at_epoch
+    norad_cat_id, object_name, epoch, mean_motion_rev_per_day, eccentricity,
+    inclination_deg, raan_deg, arg_of_pericenter_deg, mean_anomaly_deg, bstar,
+    mean_motion_dot, mean_motion_ddot, ephemeris_type, classification_type,
+    element_set_no, rev_at_epoch
 from (
     select *, row_number() over (partition by norad_cat_id order by epoch desc) as rn
-    from analytics.stg_celestrak__gp
+    from (
+        -- Deduplicate across sources before ranking. The same (object, epoch)
+        -- can appear in both catalogues, and a duplicated element set would be
+        -- counted as agreement — understating the scatter and reporting more
+        -- confidence than the data supports.
+        select distinct on (norad_cat_id, epoch) *
+        from (
+            {branches}
+        ) unioned
+        order by norad_cat_id, epoch, source_rank
+    ) deduped
     where norad_cat_id = any(%(ids)s)
       and (%(as_of)s is null or epoch <= %(as_of)s)
 ) ranked
 where rn <= %(max_sets)s
 order by norad_cat_id, epoch desc
+"""
+
+# History branches. Same sources as the catalogue, but selected across ALL
+# epochs rather than collapsed to the latest one.
+#
+# Space-Track is what makes this work at all: its gp_history backfill gives ~32
+# element sets per object, while CelesTrak publishes only the current set and
+# accumulates roughly one per day going forward. Reading CelesTrak alone — which
+# this did originally — leaves every object below min_history_sets, so every Pc
+# silently falls back to default sigmas no matter how much history exists
+# elsewhere.
+_HISTORY_COLUMNS = """
+        norad_cat_id, object_name, epoch, mean_motion_rev_per_day, eccentricity,
+        inclination_deg, raan_deg, arg_of_pericenter_deg, mean_anomaly_deg,
+        bstar, mean_motion_dot, mean_motion_ddot, ephemeris_type,
+        classification_type, element_set_no, rev_at_epoch
+"""
+
+_HISTORY_CELESTRAK_BRANCH = f"""
+    select {_HISTORY_COLUMNS}, 2 as source_rank
+    from analytics.stg_celestrak__gp
+"""
+
+_HISTORY_SPACE_TRACK_BRANCH = f"""
+    select {_HISTORY_COLUMNS}, 1 as source_rank
+    from analytics.stg_space_track__gp
 """
 
 
@@ -776,8 +812,14 @@ def screen_catalogue(
 
     if involved:
         ids = [int(meta[k]["norad_cat_id"]) for k in involved]
+        # Same source availability rule as the catalogue query: use Space-Track
+        # when it is present, and fall back to CelesTrak alone when it is not.
+        history_branches = [_HISTORY_CELESTRAK_BRANCH]
+        if _table_exists(cur, "analytics", "stg_space_track__gp"):
+            history_branches.insert(0, _HISTORY_SPACE_TRACK_BRANCH)
+
         cur.execute(
-            HISTORY_SQL,
+            HISTORY_SQL.format(branches=" union all ".join(history_branches)),
             {"ids": ids, "max_sets": DEFAULT_MAX_HISTORY_SETS, "as_of": as_of},
         )
         columns = [d[0] for d in cur.description]

@@ -322,8 +322,15 @@ def space_track_source(
     # across. Splitting them would mean every consumer had to union two tables
     # and dedupe them. The merge key makes the overlap safe — a historical
     # elset that is also the current one collapses to a single row.
+    # Distinct RESOURCE name, same TABLE as the current catalogue.
+    #
+    # dlt keys resources by name and rejects two resources sharing one — the
+    # first attempt named this `space_track_gp` like the resource above and
+    # failed with InvalidResourceDataTypeMultiplePipes. `table_name` is the
+    # supported way to have several resources write into one table.
     @dlt.resource(
-        name="space_track_gp",
+        name="space_track_gp_history",
+        table_name="space_track_gp",
         write_disposition="merge",
         primary_key=["NORAD_CAT_ID", "EPOCH"],
     )
