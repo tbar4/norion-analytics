@@ -1,0 +1,100 @@
+# Cube for analytics.apod_daily — the dbt mart built by the nasa_apod DAG.
+#
+# Cubes are always defined over a dbt MART, never over a raw dlt table. The
+# raw layer is all-varchar and its shape follows whatever the API returned, so
+# pointing a cube at it puts casting logic in the semantic layer where nothing
+# tests it.
+#
+# `sql_table` is schema-qualified because Cube connects to the `warehouse`
+# database with no search_path set — an unqualified name would resolve to
+# public and fail.
+
+cubes:
+  - name: apod_daily
+    sql_table: analytics.apod_daily
+    title: "Astronomy Picture of the Day"
+    description: >
+      One row per calendar day from NASA's APOD feed, over the trailing window
+      loaded by the nasa_apod dlt pipeline.
+
+    dimensions:
+      - name: apod_date
+        sql: apod_date
+        type: time
+        primary_key: true
+        # Shown in the UI even though it is the primary key. Cube hides primary
+        # keys by default, which would make the only time dimension invisible
+        # in Metabase.
+        public: true
+        title: "Date"
+        description: APOD publication date. Natural key, one row per day.
+
+      - name: title
+        sql: title
+        type: string
+
+      - name: media_type
+        sql: media_type
+        type: string
+        description: '"image" or "video".'
+
+      - name: copyright
+        sql: copyright
+        type: string
+        description: >
+          Attribution. NULL for public-domain entries — use the
+          is_public_domain dimension rather than testing this for NULL.
+
+      - name: is_public_domain
+        sql: is_public_domain
+        type: boolean
+        description: True when NASA returned no copyright holder.
+
+      - name: is_video
+        sql: is_video
+        type: boolean
+        description: True for video entries. These have no HD still.
+
+      - name: url
+        sql: url
+        type: string
+
+      - name: hdurl
+        sql: hdurl
+        type: string
+        description: High-resolution still. NULL for video entries.
+
+      - name: explanation
+        sql: explanation
+        type: string
+
+      # dlt's load lineage, carried through every dbt layer. Filtering on this
+      # is how you isolate the rows a single pipeline run produced.
+      - name: dlt_load_id
+        sql: _dlt_load_id
+        type: string
+        title: "dlt Load ID"
+
+    measures:
+      - name: count
+        type: count
+        title: "Entries"
+        description: Number of APOD entries.
+
+      - name: video_count
+        type: count
+        title: "Videos"
+        filters:
+          - sql: "{CUBE}.is_video"
+
+      - name: public_domain_count
+        type: count
+        title: "Public Domain Entries"
+        filters:
+          - sql: "{CUBE}.is_public_domain"
+
+      - name: avg_explanation_length
+        sql: explanation_length
+        type: avg
+        title: "Avg Explanation Length"
+        description: Mean character count of the write-up.
