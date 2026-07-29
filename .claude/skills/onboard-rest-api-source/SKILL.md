@@ -198,15 +198,28 @@ Cubes are defined over dbt **marts**, never raw tables.
 
    A `meta` response only proves the YAML parsed. Run the `load` query — that
    is what proves the database, schema and column names are right.
-3. Deploy to prod. `~/docker/cube/analytics` is a separate checkout of this
-   repo — that separation is the promotion gate, so prod serves only what has
-   been committed and pushed:
+3. Deploy to prod with the script, not by hand:
 
    ```bash
    cd ~/docker/airflow && git add semantic && git commit && git push
-   cd ~/docker/cube/analytics && git pull --ff-only
-   cd ~/docker/cube && docker compose restart cube_api cube_refresh_worker
+   ~/docker/cube/deploy.sh
    ```
+
+   `~/docker/cube/analytics` is a separate checkout of this repo — that
+   separation is the promotion gate, so prod serves only what has been
+   committed and pushed. It is also a trap: forget the pull and prod keeps
+   serving the old model, fast and healthy and wrong, with nothing erroring.
+
+   `deploy.sh` closes that. It compares the git **tree hash of `semantic/`**
+   between the working copy and the prod checkout (so unrelated commits to
+   `dags/` do not look like drift), refuses to pretend it deployed when the
+   change is uncommitted or unpushed, restarts prod only if the model actually
+   changed, waits for readiness, then reconciles every cube against the
+   warehouse.
+
+   `~/docker/cube/deploy.sh --check` reports drift and changes nothing, exiting
+   non-zero if prod is stale. Safe to run any time, and worth running after any
+   load.
 
    Prod requires JWT auth on the REST API, so verify from
    `docker logs cube-cube_api-1` (look for compilation errors) and
@@ -321,6 +334,7 @@ data is current — a stale pre-aggregation returns data too.
 [ ] New cube returns rows in the Playground (:4001) and via psql on :15432
 [ ] Cube's count RECONCILES with the warehouse count — a stale pre-aggregation
     serves wrong numbers without erroring
+[ ] ~/docker/cube/deploy.sh exits 0 (prod model current + every cube reconciles)
 ```
 
 ## When to deviate
