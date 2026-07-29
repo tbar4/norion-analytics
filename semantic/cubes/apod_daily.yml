@@ -98,3 +98,13 @@ cubes:
         type: avg
         title: "Avg Explanation Length"
         description: Mean character count of the write-up.
+
+    # No pre_aggregations here, on purpose.
+    #
+    # The grain is one row per calendar day — 365 rows for the trailing window
+    # this cube covers. A rollup over that would be indistinguishable from
+    # querying Postgres directly, so it would be ceremony rather than caching.
+    # space_weather_events carries the worked example of a rollup instead.
+    #
+    # Revisit if this ever loads APOD's full archive back to 1995, which would
+    # still only be ~11k rows — so realistically, never.

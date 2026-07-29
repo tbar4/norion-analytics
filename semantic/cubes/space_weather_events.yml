@@ -147,3 +147,47 @@ cubes:
         sql: event_time
         type: max
         title: "Latest Event"
+
+    pre_aggregations:
+      # Daily event counts by type and flare class — the shape almost every
+      # question about this cube takes.
+      #
+      # Built into Cube Store by the refresh worker, so a matching query never
+      # touches Postgres. Verify a query actually HIT it rather than assuming:
+      # the /v1/load response carries a `usedPreAggregations` object, and an
+      # empty one means the query silently fell through to the warehouse.
+      #
+      # Only ADDITIVE measures are listed. count and the filtered counts can be
+      # summed across rows, so one rollup at day granularity also answers
+      # monthly and yearly questions. Deliberately omitted:
+      #
+      #   active_region_count   exact count_distinct — non-additive, cannot be
+      #                         re-aggregated, so including it would tie this
+      #                         rollup to exactly these dimensions
+      #   first/last_event_time min/max ARE additive but are metadata rather
+      #                         than something anyone charts
+      #
+      # Queries using the omitted measures still work; they just read Postgres.
+      - name: events_by_type_daily
+        measures:
+          - CUBE.count
+          - CUBE.cme_count
+          - CUBE.flare_count
+          - CUBE.storm_count
+          - CUBE.x_class_flare_count
+        dimensions:
+          - CUBE.event_type
+          - CUBE.flare_class
+        time_dimension: CUBE.event_time
+        granularity: day
+        # No partition_granularity on purpose. The mart is ~2,600 rows for a
+        # year and would still be tiny after a full backfill to DONKI's 2010
+        # start. Partitioning buys nothing at this size and adds a build_range
+        # to maintain. Add it if this ever reaches millions of rows.
+        refresh_key:
+          # Checked hourly, but only REBUILT when the warehouse actually
+          # changed. submission_time is DONKI's own revision stamp, so this
+          # also catches events NASA revised — not just newly loaded ones.
+          every: 1 hour
+          sql: SELECT MAX(submission_time) FROM analytics.space_weather_events
+        scheduled_refresh: true
