@@ -21,17 +21,22 @@
 # Extract + load. dlt is imported directly by DAG code, so it must live in
 # the same environment as Airflow.
 #
-# Both destination extras are present during the DuckDB -> Postgres move:
-# postgres is where new pipelines land, duckdb is still what the example DAG
-# and the dbt `warehouse` project read. Drop the duckdb extra (and the pin
-# below) once dbt has been repointed at Postgres.
-dlt[duckdb,postgres]==1.29.1
+# Extras, and why each is here:
+#   postgres   — the warehouse. Every pipeline lands in it.
+#   filesystem — pulls s3fs + botocore, which dlt needs to read s3:// from
+#                MinIO. Airflow's own S3Hook does NOT need this; only dlt does.
+#   duckdb     — no longer used by anything. dbt moved to Postgres and the
+#                DuckDB example DAG/pipeline were deleted. Kept only so an
+#                ad-hoc local DuckDB run still works; safe to drop.
+dlt[duckdb,postgres,filesystem]==1.29.1
 
 # Renders each dbt model as its own Airflow task.
 astronomer-cosmos==1.15.0
 
-# Pinned to exactly the version in requirements-dbt.txt. dlt writes the
-# DuckDB file and dbt reads it, so a version skew between the two
-# environments can produce "database was created with a different version"
-# errors. Bump both files together, never one alone.
+# NOTE: the old "must match requirements-dbt.txt exactly" rule is GONE. It
+# existed because dlt wrote a DuckDB file that dbt read from a different
+# virtualenv. dbt now talks to Postgres over the wire and requirements-dbt.txt
+# no longer contains duckdb at all, so there is nothing to keep in sync.
+# This pin only serves ad-hoc local DuckDB use and can be removed with the
+# duckdb extra above.
 duckdb==1.5.5

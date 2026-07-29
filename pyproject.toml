@@ -5,6 +5,6 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "dlt[hub,postgres]>=1.29.1",
+    "dlt[filesystem,hub,postgres]>=1.29.1",
     "fastmcp>=3.4.5",
 ]
