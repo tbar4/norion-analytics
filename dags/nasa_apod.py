@@ -12,7 +12,7 @@ which sits on the separate `postgres_default` bridge network.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow.sdk import dag, task
@@ -98,7 +98,15 @@ DAYS_BACK = 365
     doc_md=__doc__,
 )
 def nasa_apod():
-    @task
+    # api.nasa.gov returns intermittent 500s on the full-year range. dlt already
+    # retries inside the request (its default covers 429 and all 5xx) and that is
+    # not enough: on 2026-07-29 the task retried for 2m52s and still failed,
+    # because the outage lasted minutes rather than seconds.
+    #
+    # So the retry that matters is at the orchestrator layer — come back in ten
+    # minutes, by which time NASA has recovered. dlt handles per-request blips;
+    # Airflow handles "the upstream was down for a while".
+    @task(retries=3, retry_delay=timedelta(minutes=10))
     def load() -> str:
         # Imported inside the task so a broken pipeline module can't stop the
         # whole DAG file from parsing.

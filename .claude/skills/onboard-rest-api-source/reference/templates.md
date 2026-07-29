@@ -234,7 +234,7 @@ Variable and the `norion-analytics-pg` Connection.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow.sdk import dag, task
@@ -291,7 +291,11 @@ render_config = RenderConfig(
     doc_md=__doc__,
 )
 def <source>():
-    @task
+    # Retry at the ORCHESTRATOR layer, not just inside the request. dlt already
+    # retries 429s and 5xx within a call, and that is not enough when an API is
+    # down for minutes rather than seconds — nasa_apod exhausted dlt's attempts
+    # after 2m52s and still failed. Coming back in ten minutes fixes it.
+    @task(retries=3, retry_delay=timedelta(minutes=10))
     def load() -> str:
         # Imported inside the task so a broken pipeline module cannot stop the
         # whole DAG file from parsing.

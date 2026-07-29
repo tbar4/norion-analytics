@@ -20,7 +20,7 @@ sits on the separate `postgres_default` bridge network.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow.sdk import dag, task
@@ -96,7 +96,11 @@ DAYS_BACK = 365
     doc_md=__doc__,
 )
 def nasa_donki():
-    @task
+    # api.nasa.gov returns intermittent 500s. dlt already retries inside the
+    # request and that is not always enough — an outage lasting minutes
+    # exhausts its attempts. This source makes eleven requests per run, so it
+    # has eleven chances to hit one. Retry the whole task later instead.
+    @task(retries=3, retry_delay=timedelta(minutes=10))
     def load() -> str:
         # Imported inside the task so a broken pipeline module can't stop the
         # whole DAG file from parsing.
