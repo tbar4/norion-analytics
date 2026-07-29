@@ -25,18 +25,37 @@
 #   postgres   — the warehouse. Every pipeline lands in it.
 #   filesystem — pulls s3fs + botocore, which dlt needs to read s3:// from
 #                MinIO. Airflow's own S3Hook does NOT need this; only dlt does.
-#   duckdb     — no longer used by anything. dbt moved to Postgres and the
-#                DuckDB example DAG/pipeline were deleted. Kept only so an
-#                ad-hoc local DuckDB run still works; safe to drop.
-dlt[duckdb,postgres,filesystem]==1.29.1
+#
+# The duckdb extra was dropped 2026-07-28. Nothing had read a DuckDB file since
+# the warehouse moved to Postgres — the example DAG and pipeline that used one
+# were deleted, and dbt now talks to Postgres over the wire.
+dlt[postgres,filesystem]==1.29.1
 
 # Renders each dbt model as its own Airflow task.
 astronomer-cosmos==1.15.0
 
-# NOTE: the old "must match requirements-dbt.txt exactly" rule is GONE. It
-# existed because dlt wrote a DuckDB file that dbt read from a different
-# virtualenv. dbt now talks to Postgres over the wire and requirements-dbt.txt
-# no longer contains duckdb at all, so there is nothing to keep in sync.
-# This pin only serves ad-hoc local DuckDB use and can be removed with the
-# duckdb extra above.
-duckdb==1.5.5
+# --- Conjunction screening ----------------------------------------------
+# The official Vallado SGP4 propagator. Used by
+# include/pipelines/conjunction_screening_pipeline.py, which propagates the
+# whole catalogue from CelesTrak OMM element sets.
+#
+# We drive it through sgp4.api.SatrecArray, which propagates M satellites at N
+# times into numpy arrays in one call. The per-satellite Python loop is orders
+# of magnitude slower and will not finish an all-on-all screen in a DAG run.
+sgp4==2.24
+
+# numpy arrives with sgp4 anyway; pinned here because the screening maths
+# depends on it directly rather than incidentally.
+numpy==2.3.4
+
+# scipy.spatial.cKDTree does the coarse neighbour query that turns an O(N^2)
+# all-pairs screen into something tractable, and scipy.special supplies the
+# error functions for the 2D Pc integral.
+scipy==1.16.3
+
+# NOTE: the old "must match requirements-dbt.txt exactly" rule is GONE, and so
+# is the `duckdb==1.5.5` pin it applied to (removed 2026-07-28). That rule
+# existed because dlt wrote a DuckDB file which dbt then read from a *different*
+# virtualenv, so an on-disk format skew between the two broke the platform.
+# Both now talk to a Postgres server over the wire, sharing no file, so there is
+# nothing left to keep in sync between these two requirements files.

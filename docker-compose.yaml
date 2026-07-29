@@ -53,10 +53,9 @@ x-airflow-common: &airflow-common
     PYTHONPATH: '/opt/airflow/include'
 
     # --- dlt + dbt ------------------------------------------------------
-    # Single source of truth for the warehouse file. profiles.yml reads it
-    # via env_var(), and the dlt pipeline reads it directly, so the two can
-    # never drift apart.
-    DBT_DUCKDB_PATH: '/opt/airflow/include/warehouse/warehouse.duckdb'
+    # DBT_DUCKDB_PATH was removed 2026-07-28. It pointed at the DuckDB warehouse
+    # file, which nothing has read since the move to Postgres — profiles.yml now
+    # takes DBT_PG_* and Cosmos builds its profile from the Airflow Connection.
     DBT_PROJECT_DIR: '/opt/airflow/include/dbt_projects/warehouse'
     DBT_PROFILES_DIR: '/opt/airflow/include/dbt_projects/warehouse'
     # If you later put this behind nginx-proxy, set the public URL here so the
@@ -184,13 +183,12 @@ services:
         /entrypoint airflow version
         echo "Writing default config if missing..."
         /entrypoint airflow config list >/dev/null
-        # DuckDB allows exactly one writing process at a time. Cosmos renders
-        # each dbt model as its own task and would happily run them in
-        # parallel, so every task that touches the warehouse is funnelled
-        # through this 1-slot pool. Without it you get intermittent
-        # "Could not set lock on file" failures under load.
-        echo "Creating the duckdb serialisation pool..."
-        /entrypoint airflow pools set duckdb 1 "Serialises writers to the DuckDB warehouse file"
+        # No pool is created here any more. A 1-slot `duckdb` pool used to
+        # serialise writers, because DuckDB permits exactly one writing process
+        # and Cosmos renders each dbt model as its own parallel task. Postgres
+        # has no such limit, so the pool only throttled work for no reason. It
+        # was deleted 2026-07-28; re-adding this line would silently recreate
+        # it on the next `docker compose up`.
         echo "Fixing ownership to ${AIRFLOW_UID:-50000}:0 ..."
         chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/{logs,dags,plugins,config,include,tests}
         echo "Init complete."
