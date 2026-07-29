@@ -229,6 +229,27 @@ Cubes are defined over dbt **marts**, never raw tables.
    **Do not try pgAdmin against Cube** — it cannot connect at all, for reasons
    in `reference/platform.md`. pgAdmin is for `warehouse` on `:5432` only.
    Metabase is no longer used; do not build anything against it.
+
+   **Reconcile Cube against the warehouse.** Run this after every load that
+   touches a cube with a pre-aggregation, not just when onboarding. The two
+   numbers must be identical:
+
+   ```bash
+   # 1. the truth
+   docker exec postgres_db psql -U tbarnes -d warehouse -t -A \
+     -c "select count(*) from analytics.<mart>;"
+
+   # 2. what Cube actually serves
+   docker exec -e PGPASSWORD="$(grep -E '^CUBE_SQL_PASSWORD=' \
+     ~/docker/cube/.env | cut -d= -f2-)" postgres_db \
+     psql -h 10.0.0.50 -p 15432 -U cube -d cube -t -A \
+     -c "select measure(count) from <mart>;"
+   ```
+
+   A mismatch means the rollup did not invalidate. Nothing errors when this
+   happens — a stale pre-aggregation serves confidently wrong numbers, and this
+   comparison is the only thing that catches it. On 2026-07-29 it caught Cube
+   reporting 2,645 events when the warehouse held 16,573.
 5. Add a **pre-aggregation** if the mart is large enough to warrant one. This
    is what the Cube Store cluster exists for; a cube without one makes Cube a
    hop that adds nothing.
@@ -278,6 +299,10 @@ State plainly: rows landed in `raw`, models built in `analytics`, DAG run
 result, and whether Cube serves the new model. If a step was skipped — no mart,
 so no cube — say so rather than implying the whole chain is live.
 
+Quote the **reconciliation** as two numbers, not as "Cube works": the warehouse
+count and Cube's count, shown to match. "Cube returns data" is not evidence the
+data is current — a stale pre-aggregation returns data too.
+
 ---
 
 ## Checklist
@@ -294,6 +319,8 @@ so no cube — say so rather than implying the whole chain is live.
 [ ] DAG run green; rows present in raw and analytics
 [ ] Cube model over a MART, load query returns data, deployed to prod
 [ ] New cube returns rows in the Playground (:4001) and via psql on :15432
+[ ] Cube's count RECONCILES with the warehouse count — a stale pre-aggregation
+    serves wrong numbers without erroring
 ```
 
 ## When to deviate
