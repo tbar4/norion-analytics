@@ -185,9 +185,28 @@ cubes:
         # start. Partitioning buys nothing at this size and adds a build_range
         # to maintain. Add it if this ever reaches millions of rows.
         refresh_key:
-          # Checked hourly, but only REBUILT when the warehouse actually
-          # changed. submission_time is DONKI's own revision stamp, so this
-          # also catches events NASA revised — not just newly loaded ones.
+          # Checked hourly, rebuilt only when the warehouse actually changed.
+          #
+          # Keyed on dlt's LOAD id, not on any event timestamp. This was
+          # originally MAX(submission_time) — DONKI's own revision stamp — and
+          # that was WRONG in a way that fails silently:
+          #
+          #   A backfill loads OLD events. Their submission_time is old too, so
+          #   MAX(submission_time) does not move, so the rollup never
+          #   invalidates, so Cube keeps serving pre-backfill numbers forever.
+          #
+          # Proven on 2026-07-29: backfilling 2010-2026 took the mart from 2,645
+          # to 16,573 rows and changed MAX(submission_time) by exactly nothing —
+          # zero backfilled rows were newer than the previous maximum. Cube went
+          # on reporting 2,645.
+          #
+          # _dlt_load_id increases on EVERY load regardless of how old the loaded
+          # data is, which is the property actually needed. count(*) is included
+          # so a deletion or a rebuild that removes rows also invalidates.
+          # Cast to numeric because the column is text and would otherwise
+          # compare lexicographically.
           every: 1 hour
-          sql: SELECT MAX(submission_time) FROM analytics.space_weather_events
+          sql: >
+            SELECT MAX(_dlt_load_id::numeric)::text || ':' || COUNT(*)::text
+            FROM analytics.space_weather_events
         scheduled_refresh: true
