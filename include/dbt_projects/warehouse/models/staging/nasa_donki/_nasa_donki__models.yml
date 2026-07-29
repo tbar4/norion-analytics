@@ -1,0 +1,99 @@
+version: 2
+
+# Tests belong here, on the MODEL, not only on the source in
+# _nasa_donki__sources.yml. Cosmos's default TestBehavior.AFTER_EACH renders a
+# test task after each *model*; a test attached to a source has no model to
+# hang off, so it parses but never runs in Airflow.
+#
+# Every event id is tested unique, which is the real assertion behind the
+# pipeline's merge write_disposition: if a key were wrong, merge would silently
+# accumulate duplicate rows instead of updating, and this is what catches it.
+
+models:
+  - name: stg_nasa_donki__cme
+    description: Coronal mass ejections, one row per CME event.
+    columns:
+      - name: cme_id
+        description: DONKI activity ID. Stable across revisions of the event.
+        data_tests: [not_null, unique]
+      - name: start_time
+        data_tests: [not_null]
+
+  - name: stg_nasa_donki__cme_analysis
+    description: >
+      Analyses of coronal mass ejections. Several per CME, so cme_id is NOT
+      unique here — the grain is cme_id + arrival_time_21_5_rs.
+    columns:
+      - name: cme_id
+        description: The CME this analysis describes. Repeats by design.
+        data_tests: [not_null]
+      - name: speed
+        description: CME speed in km/s.
+
+  - name: stg_nasa_donki__flr
+    description: Solar flares with GOES classification.
+    columns:
+      - name: flare_id
+        data_tests: [not_null, unique]
+      - name: begin_time
+        data_tests: [not_null]
+      - name: class_type
+        description: GOES class, e.g. "X2.2". First character is the magnitude order.
+
+  - name: stg_nasa_donki__gst
+    description: Geomagnetic storms.
+    columns:
+      - name: storm_id
+        data_tests: [not_null, unique]
+      - name: start_time
+        data_tests: [not_null]
+
+  - name: stg_nasa_donki__ips
+    description: Interplanetary shocks.
+    columns:
+      - name: shock_id
+        data_tests: [not_null, unique]
+      - name: event_time
+        data_tests: [not_null]
+
+  - name: stg_nasa_donki__sep
+    description: Solar energetic particle events.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+
+  - name: stg_nasa_donki__mpc
+    description: Magnetopause crossings.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+
+  - name: stg_nasa_donki__rbe
+    description: Radiation belt enhancements.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+
+  - name: stg_nasa_donki__hss
+    description: High speed streams.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+
+  - name: stg_nasa_donki__wsa_enlil_simulation
+    description: >
+      WSA+Enlil forecast runs. These are predictions, not observations — do not
+      mix them with the observed event tables without saying so.
+    columns:
+      - name: simulation_id
+        data_tests: [not_null, unique]
+
+  - name: stg_nasa_donki__notification
+    description: >
+      Human-written SWRC bulletins about the events above. Not events
+      themselves.
+    columns:
+      - name: message_id
+        data_tests: [not_null, unique]
+      - name: message_type
+        data_tests: [not_null]

@@ -1,0 +1,56 @@
+version: 2
+
+# NASA DONKI space weather. One sources file per onboarded source, living
+# beside that source's staging models.
+#
+# `raw` is the dlt dataset_name — dlt creates the schema in the Postgres
+# `warehouse` database and dbt reads from it, so the `schema:` below must match
+# `dataset_name` in include/pipelines/nasa_donki_pipeline.py.
+#
+# Only the eleven PARENT event tables are declared here. The pipeline also
+# lands ~31 child tables (`cme__instruments`, `gst__all_kp_index`,
+# `wsa_enlil_simulation__impact_list`, …) from the nested arrays in each
+# response. They are deliberately left unstaged: they are attachments rather
+# than events, and declaring forty tables nobody reads would be noise. Add one
+# here when something actually needs it.
+
+sources:
+  - name: nasa_donki
+    schema: raw
+    description: >
+      Landing tables written by include/pipelines/nasa_donki_pipeline.py, one
+      resource per DONKI component service. Loaded with write_disposition
+      "merge" over a trailing date window, so the archive accumulates across
+      runs and a revised event overwrites its previous row.
+    tables:
+      - name: cme
+        description: Coronal mass ejections. One row per CME event.
+        columns:
+          - name: activity_id
+            description: DONKI activity ID. Natural key, stable across revisions.
+      - name: cme_analysis
+        description: >
+          Analyses of coronal mass ejections — speed, direction, half-angle.
+          Several per CME, so keyed on associated_cmeid + time21_5.
+      - name: gst
+        description: Geomagnetic storms. One row per storm event.
+      - name: ips
+        description: Interplanetary shocks.
+      - name: flr
+        description: Solar flares, with X/M/C class and begin/peak/end times.
+      - name: sep
+        description: Solar energetic particle events.
+      - name: mpc
+        description: Magnetopause crossings.
+      - name: rbe
+        description: Radiation belt enhancements.
+      - name: hss
+        description: High speed streams.
+      - name: wsa_enlil_simulation
+        description: >
+          WSA+Enlil model runs predicting solar wind propagation, including
+          estimated shock arrival and predicted Kp indices.
+      - name: notification
+        description: >
+          Space Weather Research Center notifications — the human-written
+          bulletins issued about the events above.

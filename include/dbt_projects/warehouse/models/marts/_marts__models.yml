@@ -30,3 +30,48 @@ models:
         description: True for media_type = 'video'. These rows have no hdurl.
         data_tests:
           - not_null
+
+  - name: space_weather_events
+    description: >
+      One timeline of every observed NASA DONKI space weather event — CME, FLR,
+      GST, IPS, SEP, MPC, RBE, HSS. Excludes cme_analysis, the WSA+Enlil
+      forecasts and the SWRC notifications, none of which are observed events.
+      The model behind Cube's `space_weather_events` cube.
+    columns:
+      - name: event_key
+        description: >
+          Surrogate key, "<event_type>:<event_id>", and the declared grain of
+          this table. DONKI ids happen to embed their own type, so event_id is
+          unique today, but that is a naming convention rather than a promised
+          guarantee. This is the test that would catch a botched union.
+        data_tests:
+          - not_null
+          - unique
+      - name: event_type
+        description: 'CME, FLR, GST, IPS, SEP, MPC, RBE or HSS.'
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["CME", "FLR", "GST", "IPS", "SEP", "MPC", "RBE", "HSS"]
+      - name: event_id
+        description: DONKI id, unique only within its event_type.
+        data_tests:
+          - not_null
+      - name: event_time
+        description: >
+          Event start. begin_time for flares, start_time for CMEs and storms,
+          event_time for the rest.
+        data_tests:
+          - not_null
+      - name: flare_class
+        description: >
+          GOES magnitude letter (A/B/C/M/X) for flares. NULL for every other
+          event type — that is expected, not missing data.
+      - name: source_location
+        description: >
+          Solar location, e.g. "N12W54". Populated for CME and FLR only.
+      - name: observed_from
+        description: >
+          Observing vantage point for interplanetary shocks (Earth, STEREO A).
+          NULL for every other event type. Not a location on the Sun.

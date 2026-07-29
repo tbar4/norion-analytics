@@ -1,0 +1,149 @@
+# Cube for analytics.space_weather_events — the dbt mart built by the
+# nasa_donki DAG.
+#
+# Defined over the MART, not the eleven raw DONKI tables. The union, the flare
+# class split and the surrogate key all live in dbt where they are tested; this
+# file only names measures and dimensions over the result.
+#
+# `sql_table` is schema-qualified because Cube connects to the `warehouse`
+# database with no search_path set — an unqualified name would resolve to
+# public and fail.
+
+cubes:
+  - name: space_weather_events
+    sql_table: analytics.space_weather_events
+    title: "Space Weather Events"
+    description: >
+      Every observed NASA DONKI space weather event on one timeline — coronal
+      mass ejections, solar flares, geomagnetic storms, interplanetary shocks,
+      solar energetic particles, magnetopause crossings, radiation belt
+      enhancements and high speed streams. Excludes CME analyses, WSA+Enlil
+      forecasts and SWRC notifications, none of which are observed events.
+
+    dimensions:
+      - name: event_key
+        sql: event_key
+        type: string
+        primary_key: true
+        # Cube hides primary keys by default. This one is a surrogate and is
+        # not interesting to browse, so it stays hidden — unlike apod_daily,
+        # where the key is also the only time dimension.
+        public: false
+
+      - name: event_time
+        sql: event_time
+        type: time
+        title: "Event Time"
+        description: >
+          Event start. begin_time for flares, start_time for CMEs and storms,
+          event_time for the rest.
+
+      - name: event_date
+        sql: event_date
+        type: time
+        title: "Event Date"
+        description: Event start truncated to a day, for daily rollups.
+
+      - name: event_type
+        sql: event_type
+        type: string
+        title: "Event Type"
+        description: 'CME, FLR, GST, IPS, SEP, MPC, RBE or HSS.'
+
+      - name: event_id
+        sql: event_id
+        type: string
+        description: >
+          DONKI id. Unique only WITHIN an event_type — group by event_type too
+          if you are counting distinct events.
+
+      - name: flare_class
+        sql: flare_class
+        type: string
+        title: "Flare Class"
+        description: >
+          GOES magnitude letter A/B/C/M/X, X being the most energetic. NULL for
+          every non-flare event — expected, not missing data.
+
+      - name: source_location
+        sql: source_location
+        type: string
+        title: "Solar Location"
+        description: >
+          Position on the Sun, e.g. "N12W54". Populated for CME and FLR only.
+
+      - name: observed_from
+        sql: observed_from
+        type: string
+        title: "Observed From"
+        description: >
+          Vantage point for interplanetary shocks (Earth, STEREO A). NULL for
+          other event types. NOT a location on the Sun.
+
+      - name: active_region_num
+        sql: active_region_num
+        type: number
+        title: "Active Region"
+        description: >
+          NOAA active region number the event came from. Populated for CME and
+          FLR; the same region typically produces many events.
+
+      - name: link
+        sql: link
+        type: string
+        description: DONKI web page for the event.
+
+      # dlt's load lineage, carried through every dbt layer. Filtering on this
+      # isolates the rows a single pipeline run produced.
+      - name: dlt_load_id
+        sql: _dlt_load_id
+        type: string
+        title: "dlt Load ID"
+
+    measures:
+      - name: count
+        type: count
+        title: "Events"
+
+      - name: cme_count
+        type: count
+        title: "Coronal Mass Ejections"
+        filters:
+          - sql: "{CUBE}.event_type = 'CME'"
+
+      - name: flare_count
+        type: count
+        title: "Solar Flares"
+        filters:
+          - sql: "{CUBE}.event_type = 'FLR'"
+
+      - name: storm_count
+        type: count
+        title: "Geomagnetic Storms"
+        filters:
+          - sql: "{CUBE}.event_type = 'GST'"
+
+      - name: x_class_flare_count
+        type: count
+        title: "X-Class Flares"
+        description: The most energetic flare class — the ones that matter.
+        filters:
+          - sql: "{CUBE}.flare_class = 'X'"
+
+      - name: active_region_count
+        sql: active_region_num
+        type: count_distinct
+        title: "Distinct Active Regions"
+        description: >
+          How many NOAA active regions produced events. Counts only CME and FLR
+          rows, since nothing else carries a region.
+
+      - name: first_event_time
+        sql: event_time
+        type: min
+        title: "Earliest Event"
+
+      - name: last_event_time
+        sql: event_time
+        type: max
+        title: "Latest Event"
