@@ -253,6 +253,25 @@ so no cube — say so rather than implying the whole chain is live.
 
 ## When to deviate
 
+- **An API with many endpoints** — one source, N resources. Do NOT create one
+  pipeline per endpoint. If they share a base URL, an auth scheme and a
+  paging/date contract, they belong in one `resources: [...]` list with the
+  shared parts hoisted into `resource_defaults`. That gives one DAG, one dbt
+  tag and one state directory. `nasa_donki` is the worked example: eleven DONKI
+  services in a single source, driven by one `DONKI_RESOURCES` list so adding a
+  service is a one-line change.
+- **Nested arrays in the response** — dlt normalises each into its own child
+  table (`<resource>__<array>`), so one resource can produce a dozen tables in
+  `raw`. Stage the parent tables; leave the children in `raw` until something
+  actually needs them, and say so in the sources file. `nasa_donki` lands ~42
+  tables and stages 11.
+- **Records that get revised** — key on the stable id and use `merge`. Do not
+  put a version field in the primary key: that turns every revision into a new
+  row, which is the opposite of what merge is for.
+- **A resource with no natural id** — verify a composite key against live data
+  rather than assuming one. DONKI's CMEAnalysis looked like it keyed on
+  `associatedCMEID`, which was only 236/264 unique; the real grain needed
+  `time21_5` as well.
 - **No API key** (public endpoint) — drop the Variable and the `auth` block.
 - **Not a REST API** — this recipe does not apply. SQL databases and
   files/object storage have their own dlt sources; steps 3–6 still hold, only
