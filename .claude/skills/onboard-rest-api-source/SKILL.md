@@ -181,8 +181,9 @@ docker exec postgres_db psql -U tbarnes -d warehouse -c "\dt raw.*" \
 
 Cubes are defined over dbt **marts**, never raw tables.
 
-1. Write `~/docker/cube-dev/model/cubes/<mart>.yml` from the template.
-   `sql_table` must be schema-qualified: `analytics.<mart>`.
+1. Write `semantic/cubes/<mart>.yml` **in this repo** from the template.
+   `sql_table` must be schema-qualified: `analytics.<mart>`. The cube lives
+   beside the dbt mart it reads so both change in one commit.
 2. Dev Cube hot-reloads. Verify the model loads and, more importantly, that it
    can actually query:
 
@@ -194,17 +195,23 @@ Cubes are defined over dbt **marts**, never raw tables.
 
    A `meta` response only proves the YAML parsed. Run the `load` query — that
    is what proves the database, schema and column names are right.
-3. Deploy to prod. `~/docker/cube/model` is a git clone of
-   `~/docker/cube-dev/model`:
+3. Deploy to prod. `~/docker/cube/analytics` is a separate checkout of this
+   repo — that separation is the promotion gate, so prod serves only what has
+   been committed and pushed:
 
    ```bash
-   cd ~/docker/cube-dev/model && git add cubes/ && git commit
-   cd ~/docker/cube/model && git pull --ff-only
+   cd ~/docker/airflow && git add semantic && git commit && git push
+   cd ~/docker/cube/analytics && git pull --ff-only
    cd ~/docker/cube && docker compose restart cube_api cube_refresh_worker
    ```
 
-   Prod requires JWT auth, so verify it from `docker logs cube-cube_api-1`
-   (look for compilation errors) and `curl http://10.0.0.50:4000/readyz`.
+   Prod requires JWT auth on the REST API, so verify from
+   `docker logs cube-cube_api-1` (look for compilation errors) and
+   `curl http://10.0.0.50:4000/readyz`. The SQL API on `:15432` needs no JWT,
+   so a psql query against prod is the strongest check.
+
+   Git identity is not configured globally on this host — commit with
+   `git -c user.name=trevorb -c user.email=trevor.barnes91@gmail.com`.
 4. Confirm the cube is usable from the two surfaces that actually work:
 
    - **Playground** at `10.0.0.50:4001` — the new cube should be selectable and
@@ -219,9 +226,6 @@ Cubes are defined over dbt **marts**, never raw tables.
    **Do not try pgAdmin against Cube** — it cannot connect at all, for reasons
    in `reference/platform.md`. pgAdmin is for `warehouse` on `:5432` only.
    Metabase is no longer used; do not build anything against it.
-
-   Git identity is not configured globally on this host — commit with
-   `git -c user.name=trevorb -c user.email=trevor.barnes91@gmail.com`.
 
 ## Step 7 — Report
 

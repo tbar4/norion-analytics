@@ -10,8 +10,8 @@ working around it — most were established by hitting the failure first.
 | Airflow 3.3.0 | `~/docker/airflow`, UI on `10.0.0.50:8080` | LocalExecutor, FAB auth |
 | Warehouse Postgres | container `postgres_db`, `10.0.0.50:5432` | postgres:17, user `tbarnes`, database **`warehouse`** |
 | Airflow metadata Postgres | container `airflow-postgres-1`, `:5433` | postgres:16, user `airflow`. **Separate instance.** Never load data here. |
-| Cube prod | `~/docker/cube`, `10.0.0.50:4000` | Auth required, no Playground. SQL API on `:15432`. |
-| Cube dev | `~/docker/cube-dev`, `10.0.0.50:4001` | Dev mode: Playground on, **no auth**, model hot-reloads |
+| Cube prod | `~/docker/cube`, `10.0.0.50:4000` | Auth on REST API, no Playground. SQL API on `:15432` needs no JWT. Mounts `~/docker/cube/analytics/semantic`, a separate checkout of this repo. |
+| Cube dev | `~/docker/cube-dev`, `10.0.0.50:4001` | Dev mode: Playground on, **no auth**, hot-reloads. Mounts this repo's `semantic/` live. |
 | pgAdmin | `10.0.0.50:5050` | Postgres admin/debugging only. **Cannot query Cube** — see below. |
 
 Metabase (`:3000`) is still running but is **no longer the UI** — dropped

@@ -333,7 +333,7 @@ schema. That naming trap is Airflow's, not ours.
 
 ---
 
-## 4. `~/docker/cube-dev/model/cubes/<mart>.yml`
+## 4. `semantic/cubes/<mart>.yml` (in this repo)
 
 Always over a dbt **mart**, never a raw dlt table — the raw layer is
 all-varchar and shaped by whatever the API returned.
