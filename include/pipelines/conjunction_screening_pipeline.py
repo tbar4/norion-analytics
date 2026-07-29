@@ -62,11 +62,16 @@ KNOWN LIMITATIONS, stated because they change how the output should be read:
     (INTELSAT 10-02) and 46113 (MEV-2), or duplicated entries. They produce a
     permanent 0 km / 0 km-s "conjunction" that would bury real events. The run
     row counts how many were suppressed.
-  * Objects with fewer than `min_history_sets` element sets get a documented
-    fallback covariance rather than an estimated one, flagged in the output.
-    Until this pipeline has accumulated several days of element-set history,
-    EVERY row will say `fallback` — the estimate needs history that a new
-    install does not yet have.
+  * Objects with fewer than `min_history_sets` element sets within
+    `max_history_age_days` get a documented fallback covariance rather than an
+    estimated one, flagged in the output. On a fresh install with no history
+    every row says `fallback`; after a Space-Track gp_history backfill it was
+    95.9% `tle_history`.
+  * The covariance measures how much an object's RECENT element sets disagree,
+    which is a proxy for state uncertainty and not the same thing. It is bounded
+    to the last few days on purpose — over longer spans the scatter is dominated
+    by SGP4 propagation error rather than by orbit-determination disagreement,
+    which inflates the covariance and pushes Pc DOWN, understating risk.
   * `active` from CelesTrak is payloads only. Debris coverage depends on the
     Space-Track catalogue being loaded; without it this screens an incomplete
     universe and will silently under-report. The run row records how many
@@ -150,8 +155,21 @@ DEFAULT_MAX_HISTORY_SETS = 12
 # larger covariance spreads the probability out, they push Pc DOWN — silently
 # understating risk, which is the dangerous direction to be wrong in.
 #
-# Three days keeps the propagation interval short while still leaving ~6 sets
-# per object, comfortably above DEFAULT_MIN_HISTORY_SETS.
+# The window trades estimate QUALITY against estimate COVERAGE. Measured against
+# the live catalogue 2026-07-29 (32k objects, 14 days of gp_history):
+#
+#   window   objects with 3+ sets   avg sets   events with implausible sigma
+#    2 d            32.1%              2.1
+#    3 d            80.6%              3.9              2.0%   <- chosen
+#    5 d            91.5%              6.4
+#    7 d            94.0%             10.5
+#   14 d            97.0%             25.2             12.8%
+#
+# Three days is chosen because an honest `fallback` flag is better than a
+# confident number built on inflated covariance. Widening to 5 d buys ~11 more
+# points of coverage at the cost of longer propagation intervals; that is the
+# knob to turn if fallback coverage matters more than sigma quality, and it is a
+# judgement call rather than a fact.
 DEFAULT_MAX_HISTORY_AGE_DAYS = 3.0
 
 # Fallback 1-sigma position uncertainty when an object has too little element
