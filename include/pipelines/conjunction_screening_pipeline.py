@@ -134,6 +134,26 @@ DEFAULT_FINE_STEP_S = 0.25
 DEFAULT_MIN_HISTORY_SETS = 3
 DEFAULT_MAX_HISTORY_SETS = 12
 
+# Only element sets from the last few days feed the scatter estimate.
+#
+# This bound is not optional, and a count limit alone does NOT substitute for
+# it. The estimate propagates each historical element set to one common epoch
+# and measures how far apart they land. An OLD element set lands far away
+# largely because SGP4 error grows with propagation time — in-track error
+# especially — so including it measures propagation age rather than
+# orbit-determination disagreement.
+#
+# Measured 2026-07-29 after the gp_history backfill gave ~27 sets per object
+# over 14 days: with only the count limit, 12 sets reached back 5-6 days and
+# 12.8% of events came out with a combined in-track sigma above 1000 km, with
+# a maximum of 9082 km. Those are not credible uncertainties, and because a
+# larger covariance spreads the probability out, they push Pc DOWN — silently
+# understating risk, which is the dangerous direction to be wrong in.
+#
+# Three days keeps the propagation interval short while still leaving ~6 sets
+# per object, comfortably above DEFAULT_MIN_HISTORY_SETS.
+DEFAULT_MAX_HISTORY_AGE_DAYS = 3.0
+
 # Fallback 1-sigma position uncertainty when an object has too little element
 # set history to estimate one. These are the widely quoted TLE error magnitudes
 # — order 1 km radial and cross-track, several km in-track — and are used only
@@ -265,6 +285,8 @@ from (
     ) deduped
     where norad_cat_id = any(%(ids)s)
       and (%(as_of)s is null or epoch <= %(as_of)s)
+      -- Age floor, not just a count limit. See DEFAULT_MAX_HISTORY_AGE_DAYS.
+      and epoch >= %(history_floor)s
 ) ranked
 where rn <= %(max_sets)s
 order by norad_cat_id, epoch desc
@@ -820,7 +842,15 @@ def screen_catalogue(
 
         cur.execute(
             HISTORY_SQL.format(branches=" union all ".join(history_branches)),
-            {"ids": ids, "max_sets": DEFAULT_MAX_HISTORY_SETS, "as_of": as_of},
+            {
+                "ids": ids,
+                "max_sets": DEFAULT_MAX_HISTORY_SETS,
+                "as_of": as_of,
+                # Anchored to the screening moment, not to wall-clock now, so a
+                # backfill uses the history that was recent AT THE TIME.
+                "history_floor": (as_of or window_start)
+                - timedelta(days=DEFAULT_MAX_HISTORY_AGE_DAYS),
+            },
         )
         columns = [d[0] for d in cur.description]
         by_object: dict[int, list[dict]] = {}
