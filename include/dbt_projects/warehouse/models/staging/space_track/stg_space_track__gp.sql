@@ -41,7 +41,16 @@ select
     rcs_size,
     country_code,
     cast(nullif(launch_date, '') as date)                    as launch_date,
-    cast(nullif(decay_date, '') as date)                     as decay_date,
+
+    -- decay_date is deliberately ABSENT.
+    --
+    -- The pipeline's query filters on `decay_date/null-val` — only on-orbit
+    -- objects — so the column is null for every row by construction, and dlt
+    -- drops an all-null column rather than materialising it. Selecting it here
+    -- failed the first real run with `column "decay_date" does not exist`.
+    -- Verified against a live load 2026-07-29: 32,184 objects, no decay_date.
+    --
+    -- If the pipeline ever stops filtering on it, add it back as a real cast.
 
     -- Orbit geometry, precomputed by Space-Track. Useful for an apogee/perigee
     -- pre-filter without deriving it from mean motion.

@@ -1,0 +1,50 @@
+version: 2
+
+# Platform observability: Airflow's own metadata, plus dlt's load bookkeeping.
+#
+# Two sources are declared here because they answer the same question from
+# different sides — "did the platform run, and did it move any data" — and are
+# built by the same DAG.
+
+sources:
+  - name: airflow_meta
+    schema: raw
+    description: >
+      Airflow metadata tables, loaded by
+      include/pipelines/airflow_meta_pipeline.py from the SEPARATE
+      airflow-postgres-1 instance. Column allowlists there deliberately exclude
+      the credential-bearing tables — see that module's docstring.
+    tables:
+      - name: airflow_dag_run
+        description: One row per DAG run. Merged on `id`, incremental on `updated_at`.
+      - name: airflow_task_instance
+        description: >
+          One row per task attempt, latest attempt only — Airflow MOVES earlier
+          tries to task_instance_history. `duration` is seconds.
+      - name: airflow_dag
+        description: DAG-level config and parse state. Fully refreshed each run.
+      - name: airflow_job
+        description: Scheduler, triggerer and dag-processor liveness.
+
+      # NOT YET MATERIALISED. Both are ingested by the pipeline but are empty
+      # upstream today, and dlt does not create a table for a resource that
+      # yields no rows. They will appear on the first load where they have
+      # data — a retry for the history table, a broken DAG file for the errors
+      # one. Add staging models then; nothing references them yet, so their
+      # absence breaks nothing.
+      #
+      #   airflow_task_instance_history
+      #   airflow_import_error
+
+  - name: dlt_internal
+    schema: raw
+    description: >
+      dlt's own load bookkeeping, written by every pipeline rather than by any
+      one of them. This is what makes "which pipeline loaded, when, and how
+      many rows" answerable at all — Airflow tracks task outcomes but has no
+      concept of rows.
+    tables:
+      - name: _dlt_loads
+        description: >
+          One row per dlt load package. `schema_name` is the source name and
+          `status` is 0 for a completed load.

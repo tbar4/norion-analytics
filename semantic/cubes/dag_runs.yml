@@ -1,0 +1,151 @@
+# Cube for analytics.dag_runs — the dbt mart built by the airflow_meta DAG.
+#
+# Run-level platform health: did DAGs run, how long did they take, what failed.
+#
+# No pre_aggregations, deliberately. A few hundred rows today, and a rollup
+# there is ceremony rather than caching — same reasoning as apod_daily. Revisit
+# when this passes roughly a million rows, which at the current schedule is
+# years away.
+
+cubes:
+  - name: dag_runs
+    sql_table: analytics.dag_runs
+    title: "DAG Runs"
+    description: >
+      One row per Airflow DAG run with its task outcomes rolled up. The
+      run-level view of whether the platform is healthy.
+
+    dimensions:
+      - name: dag_run_id
+        sql: dag_run_id
+        type: number
+        primary_key: true
+        public: false
+
+      - name: dag_id
+        sql: dag_id
+        type: string
+        title: "DAG"
+
+      - name: run_id
+        sql: run_id
+        type: string
+
+      - name: state
+        sql: state
+        type: string
+        description: queued, running, success or failed.
+
+      - name: run_type
+        sql: run_type
+        type: string
+        description: scheduled, manual or backfill.
+
+      - name: start_date
+        sql: start_date
+        type: time
+        title: "Started"
+        description: >
+          When the run actually happened. Use this for charting, NOT
+          logical_date.
+
+      - name: run_date
+        sql: run_date
+        type: time
+        title: "Run Date"
+
+      - name: logical_date
+        sql: logical_date
+        type: time
+        description: >
+          Airflow's scheduling timestamp, not when the run happened. Kept for
+          joining back to Airflow; charting against it is the classic mistake.
+        public: false
+
+      - name: schedule
+        sql: schedule
+        type: string
+        description: The DAG's cron, e.g. "0 7 * * *".
+
+      - name: owners
+        sql: owners
+        type: string
+
+      - name: is_paused
+        sql: is_paused
+        type: boolean
+
+      - name: is_failed
+        sql: is_failed
+        type: boolean
+
+      - name: is_finished
+        sql: is_finished
+        type: boolean
+        description: >
+          Terminal states only. Filter on this before computing any rate — a
+          queued run is neither a success nor a failure.
+
+    measures:
+      - name: count
+        type: count
+        title: "Runs"
+
+      - name: failed_count
+        type: count
+        title: "Failed Runs"
+        filters:
+          - sql: "{CUBE}.is_failed"
+
+      - name: success_count
+        type: count
+        title: "Successful Runs"
+        filters:
+          - sql: "{CUBE}.is_success"
+
+      - name: finished_count
+        type: count
+        title: "Finished Runs"
+        filters:
+          - sql: "{CUBE}.is_finished"
+
+      - name: failure_rate_pct
+        type: number
+        title: "Failure Rate %"
+        description: >
+          Failures as a percentage of FINISHED runs, not of all runs. Counting
+          in-flight runs in the denominator understates the rate.
+        sql: "100.0 * {failed_count} / NULLIF({finished_count}, 0)"
+
+      - name: avg_duration_seconds
+        sql: duration_seconds
+        type: avg
+        title: "Avg Duration (s)"
+
+      - name: max_duration_seconds
+        sql: duration_seconds
+        type: max
+        title: "Slowest Run (s)"
+
+      - name: avg_queue_seconds
+        sql: queue_seconds
+        type: avg
+        title: "Avg Queue Wait (s)"
+        description: >
+          Time between queued and started. Rising here means the scheduler is
+          saturated rather than the DAG being slow.
+
+      - name: total_tasks_retried
+        sql: tasks_retried
+        type: sum
+        title: "Task Retries"
+
+      - name: total_tasks_failed
+        sql: tasks_failed
+        type: sum
+        title: "Task Failures"
+
+      - name: last_run_at
+        sql: start_date
+        type: max
+        title: "Last Run"

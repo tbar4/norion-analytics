@@ -1,0 +1,76 @@
+version: 2
+
+# Tests belong here, on the MODEL, not on the source. Cosmos's default
+# TestBehavior.AFTER_EACH renders a test task after each *model*; a test
+# attached to a source has no model to hang off and never runs in Airflow.
+
+models:
+  - name: stg_airflow_meta__dag_run
+    description: One row per Airflow DAG run.
+    columns:
+      - name: dag_run_id
+        description: Airflow's own dag_run.id. Merge key.
+        data_tests: [not_null, unique]
+      - name: dag_id
+        data_tests: [not_null]
+      - name: run_id
+        data_tests: [not_null]
+      - name: state
+        description: >
+          queued, running, success or failed. NOT constrained by an
+          accepted_values test on purpose — Airflow has added states across
+          versions, and a new one should show up in a dashboard as an unknown
+          category rather than break the pipeline that feeds it.
+
+  - name: stg_airflow_meta__task_instance
+    description: >
+      One row per task, latest attempt only. Earlier tries live in
+      task_instance_history, which is not yet materialised.
+    columns:
+      - name: task_instance_id
+        description: Airflow's task_instance.id (uuid). Merge key.
+        data_tests: [not_null, unique]
+      - name: dag_id
+        data_tests: [not_null]
+      - name: try_number
+        description: Attempts made. Greater than 1 means the task retried.
+        data_tests: [not_null]
+      - name: duration_seconds
+        description: >
+          Seconds. NULL while running or before start — expected, not missing
+          data.
+
+  - name: stg_airflow_meta__dag
+    description: DAG config and parse state. Fully refreshed each load.
+    columns:
+      - name: dag_id
+        data_tests: [not_null, unique]
+      - name: is_paused
+        data_tests: [not_null]
+
+  - name: stg_airflow_meta__job
+    description: Scheduler, triggerer and dag-processor liveness.
+    columns:
+      - name: job_id
+        data_tests: [not_null, unique]
+
+  - name: stg_dlt_internal__loads
+    description: One row per dlt load package, written by every pipeline.
+    columns:
+      - name: load_id
+        description: >
+          dlt's load id. NOT tested unique — a single load package writes one
+          row per schema it touched, so the grain is (load_id, source_name).
+        data_tests: [not_null]
+      - name: source_name
+        data_tests: [not_null]
+
+  - name: stg_dlt_internal__load_rows
+    description: >
+      Rows written per dlt load per destination table. The table list is
+      discovered at compile time, so this covers new sources automatically.
+    columns:
+      - name: table_name
+        data_tests: [not_null]
+      - name: row_count
+        data_tests: [not_null]

@@ -1,0 +1,115 @@
+# Cube for analytics.pipeline_loads — the dbt mart built by the airflow_meta DAG.
+#
+# The only place row counts exist. Airflow knows how long a task took but not
+# whether it moved ten rows or ten thousand; dlt knows the rows but nothing
+# about schedules. This cube is the join.
+#
+# No pre_aggregations — one row per dlt load package, so it grows slowly.
+
+cubes:
+  - name: pipeline_loads
+    sql_table: analytics.pipeline_loads
+    title: "Pipeline Loads"
+    description: >
+      One row per dlt load package: which source loaded, when, how many rows it
+      wrote, and which Airflow run did it.
+
+    dimensions:
+      - name: load_key
+        # load_id is not unique on its own — one package can write several
+        # source schemas — so the primary key is the pair.
+        sql: "{CUBE}.load_id || ':' || {CUBE}.source_name"
+        type: string
+        primary_key: true
+        public: false
+
+      - name: load_id
+        sql: load_id
+        type: string
+        description: dlt's load id, a float timestamp as text.
+
+      - name: source_name
+        sql: source_name
+        type: string
+        title: "Source"
+        description: >
+          dlt schema name, which equals the dag_id by convention in this
+          platform.
+
+      - name: loaded_at
+        sql: loaded_at
+        type: time
+        title: "Loaded At"
+
+      - name: loaded_date
+        sql: loaded_date
+        type: time
+        title: "Load Date"
+
+      - name: run_type
+        sql: run_type
+        type: string
+
+      - name: run_state
+        sql: run_state
+        type: string
+
+      - name: is_completed
+        sql: is_completed
+        type: boolean
+        description: dlt's own status, 0 meaning the package completed.
+
+      - name: was_run_outside_airflow
+        sql: was_run_outside_airflow
+        type: boolean
+        title: "Run By Hand"
+        description: >
+          True when no Airflow run brackets the load — a backfill or smoke test
+          run manually. Signal rather than a defect, but a source where this is
+          usually true is one whose schedule is not doing the work.
+
+    measures:
+      - name: count
+        type: count
+        title: "Loads"
+
+      - name: rows_moved
+        sql: row_count
+        type: sum
+        title: "Rows Moved"
+        description: >
+          Rows this load wrote or rewrote. Under `merge`, `_dlt_load_id` records
+          the load that LAST touched a row, so re-running a merge over an
+          unchanged window moves rows onto the newer load id rather than adding
+          them.
+
+      - name: avg_rows_per_load
+        sql: row_count
+        type: avg
+        title: "Avg Rows / Load"
+
+      - name: max_rows_in_a_load
+        sql: row_count
+        type: max
+        title: "Largest Load"
+
+      - name: tables_written
+        sql: table_count
+        type: sum
+        title: "Table Writes"
+
+      - name: manual_load_count
+        type: count
+        title: "Loads Run By Hand"
+        filters:
+          - sql: "{CUBE}.was_run_outside_airflow"
+
+      - name: avg_run_duration_seconds
+        sql: run_duration_seconds
+        type: avg
+        title: "Avg Run Duration (s)"
+
+      - name: last_loaded_at
+        sql: loaded_at
+        type: max
+        title: "Last Load"

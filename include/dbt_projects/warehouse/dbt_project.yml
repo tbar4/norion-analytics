@@ -33,6 +33,12 @@ models:
       # of the graph rather than the whole project. Tagging the folder rather
       # than the model means a new model added to the folder inherits the tag
       # automatically — nothing to remember when you add a table.
+      # Platform observability rather than a data source: Airflow's own
+      # metadata plus dlt's load bookkeeping. Tagged like any other source so
+      # its DAG builds only its own slice.
+      airflow_meta:
+        +tags: ["airflow_meta"]
+
       nasa_apod:
         +tags: ["nasa_apod"]
 

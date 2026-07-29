@@ -194,3 +194,78 @@ models:
           coverage from Space-Track. False means the screen under-reports.
         data_tests:
           - not_null
+
+  - name: dag_runs
+    description: >
+      One row per Airflow DAG run with its task outcomes rolled up — the
+      run-level view of platform health. Behind Cube's `dag_runs` cube.
+    columns:
+      - name: dag_run_id
+        description: Airflow's dag_run.id.
+        data_tests:
+          - not_null
+          - unique
+      - name: dag_id
+        data_tests:
+          - not_null
+      - name: is_finished
+        description: >
+          True only for terminal states. Rates computed over unfinished runs
+          are wrong — a queued run is neither a success nor a failure.
+        data_tests:
+          - not_null
+      - name: duration_seconds
+        description: >
+          Wall clock from start to end. NULL while a run is in flight, which is
+          expected rather than missing.
+      - name: tasks_retried
+        description: Tasks whose try_number exceeded 1.
+        data_tests:
+          - not_null
+
+  - name: task_runs
+    description: >
+      One row per task attempt (latest attempt only), joined to its DAG run.
+      Behind Cube's `task_runs` cube.
+    columns:
+      - name: task_instance_id
+        description: Airflow's task_instance.id (uuid).
+        data_tests:
+          - not_null
+          - unique
+      - name: dag_id
+        data_tests:
+          - not_null
+      - name: is_upstream_failed
+        description: >
+          Kept distinct from is_failed deliberately. An upstream_failed task
+          did not fail — it never ran. Merging the two inflates the failure
+          rate and points at the wrong task.
+        data_tests:
+          - not_null
+      - name: was_retried
+        data_tests:
+          - not_null
+
+  - name: pipeline_loads
+    description: >
+      One row per dlt load package — rows moved, and which Airflow run moved
+      them. The only place row counts exist, since Airflow does not track them.
+      Behind Cube's `pipeline_loads` cube.
+    columns:
+      - name: load_id
+        description: >
+          dlt's load id. NOT unique here: one package can write several source
+          schemas, and the grain is (load_id, source_name).
+        data_tests:
+          - not_null
+      - name: source_name
+        description: dlt schema name, which equals the dag_id by convention.
+        data_tests:
+          - not_null
+      - name: was_run_outside_airflow
+        description: >
+          True when no Airflow run brackets the load — a backfill or smoke test
+          run by hand. Signal, not a defect.
+        data_tests:
+          - not_null

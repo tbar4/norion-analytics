@@ -1,0 +1,155 @@
+# Cube for analytics.task_runs — the dbt mart built by the airflow_meta DAG.
+#
+# Task-level detail: which step is slow, which fails, which retries.
+#
+# No pre_aggregations for now — a few hundred rows. This is the table that will
+# grow fastest of the three, since it gains a row per task per run, so it is the
+# first candidate for a rollup once the dashboard feels slow.
+
+cubes:
+  - name: task_runs
+    sql_table: analytics.task_runs
+    title: "Task Runs"
+    description: >
+      One row per Airflow task attempt, joined to its DAG run. Latest attempt
+      only — Airflow moves earlier tries out of task_instance, so `was_retried`
+      tells you a retry happened but not what the earlier attempt did.
+
+    joins:
+      - name: dag_runs
+        sql: "{CUBE}.dag_run_id = {dag_runs}.dag_run_id"
+        relationship: many_to_one
+
+    dimensions:
+      - name: task_instance_id
+        sql: task_instance_id
+        type: string
+        primary_key: true
+        public: false
+
+      - name: dag_run_id
+        sql: dag_run_id
+        type: number
+        public: false
+
+      - name: dag_id
+        sql: dag_id
+        type: string
+        title: "DAG"
+
+      - name: task_id
+        sql: task_id
+        type: string
+        title: "Task"
+
+      - name: run_id
+        sql: run_id
+        type: string
+
+      - name: state
+        sql: state
+        type: string
+
+      - name: operator
+        sql: operator
+        type: string
+        description: >
+          Cosmos names every dbt model task the same operator, so this is what
+          separates ingestion work from transformation.
+
+      - name: pool
+        sql: pool
+        type: string
+
+      - name: start_date
+        sql: start_date
+        type: time
+        title: "Started"
+
+      - name: run_date
+        sql: run_date
+        type: time
+        title: "Run Date"
+
+      - name: try_number
+        sql: try_number
+        type: number
+        description: Attempts made. Greater than 1 means the task retried.
+
+      - name: retry_reason
+        sql: retry_reason
+        type: string
+        description: >
+          As close to an error message as the metadata database gets. Task logs
+          are files on disk, not rows, so this is usually NULL even for
+          failures.
+
+      - name: is_failed
+        sql: is_failed
+        type: boolean
+
+      - name: is_upstream_failed
+        sql: is_upstream_failed
+        type: boolean
+        description: >
+          Distinct from is_failed. An upstream_failed task did not fail, it
+          never ran — merging the two inflates the failure rate and points at
+          the wrong task.
+
+      - name: was_retried
+        sql: was_retried
+        type: boolean
+
+      - name: is_finished
+        sql: is_finished
+        type: boolean
+
+    measures:
+      - name: count
+        type: count
+        title: "Task Runs"
+
+      - name: failed_count
+        type: count
+        title: "Failures"
+        filters:
+          - sql: "{CUBE}.is_failed"
+
+      - name: upstream_failed_count
+        type: count
+        title: "Blocked by Upstream"
+        filters:
+          - sql: "{CUBE}.is_upstream_failed"
+
+      - name: retried_count
+        type: count
+        title: "Retried"
+        filters:
+          - sql: "{CUBE}.was_retried"
+
+      - name: finished_count
+        type: count
+        title: "Finished"
+        filters:
+          - sql: "{CUBE}.is_finished"
+
+      - name: failure_rate_pct
+        type: number
+        title: "Failure Rate %"
+        description: Failures as a percentage of FINISHED tasks.
+        sql: "100.0 * {failed_count} / NULLIF({finished_count}, 0)"
+
+      - name: avg_duration_seconds
+        sql: duration_seconds
+        type: avg
+        title: "Avg Duration (s)"
+
+      - name: max_duration_seconds
+        sql: duration_seconds
+        type: max
+        title: "Slowest (s)"
+
+      - name: total_duration_seconds
+        sql: duration_seconds
+        type: sum
+        title: "Total Compute (s)"

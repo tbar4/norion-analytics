@@ -89,7 +89,14 @@ def space_track():
     # Retry at the orchestrator layer, as celestrak does. Space-Track is a
     # single upstream that is periodically down for maintenance windows longer
     # than any in-request retry will cover.
-    @task(retries=3, retry_delay=timedelta(minutes=10), execution_timeout=timedelta(minutes=30))
+    # execution_timeout is sized for the gp_history BACKFILL, not the routine
+    # run. A routine run makes two requests and finishes in a minute; a 14-day
+    # backfill makes 14 rate-limited requests and normalises on the order of a
+    # million elsets, which comfortably exceeds a 30-minute budget.
+    #
+    # A retry re-issues every chunk, which is wasteful but safe — the merge key
+    # makes re-loading the same elsets a no-op.
+    @task(retries=3, retry_delay=timedelta(minutes=10), execution_timeout=timedelta(hours=3))
     def load() -> str:
         # Imported inside the task so a broken pipeline module cannot stop the
         # whole DAG file from parsing.
