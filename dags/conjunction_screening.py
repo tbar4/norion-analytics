@@ -74,6 +74,15 @@ render_config = RenderConfig(
     max_active_runs=1,
     tags=["dlt", "conjunction", "raw", "sgp4"],
     doc_md=__doc__,
+    # Backfill a specific past date by hand:
+    #   airflow dags trigger conjunction_screening \
+    #     -c '{"epoch_start": "2026-07-20T00:00:00Z"}'
+    #
+    # The screen then selects the element sets that were current at that moment
+    # rather than today's, and keys the run on it so a repeat is a no-op.
+    # Backfill depth is bounded by how much element-set history exists — see the
+    # space_track source's history_days backfill.
+    params={"epoch_start": None},
 )
 def conjunction_screening():
     # No retries. Unlike an API fetch, this task fails for deterministic
@@ -84,8 +93,57 @@ def conjunction_screening():
         # Imported inside the task so a broken pipeline module cannot stop the
         # whole DAG file from parsing.
         from airflow.hooks.base import BaseHook
+        from airflow.sdk import get_current_context
 
         from pipelines.conjunction_screening_pipeline import load_conjunction_screening
+
+        # Screen from the interval's own start, not from wall-clock now.
+        #
+        # This is what makes the DAG idempotent and backfillable: the run id is
+        # derived from this timestamp, so re-running an interval merges over its
+        # own previous output rather than appending a duplicate. The loader also
+        # defaults `as_of` to it, so a catchup run selects the element sets that
+        # were current at the time rather than today's.
+        #
+        # In Airflow 3.3 a MANUAL run has logical_date and data_interval set to
+        # NULL — verified against the metadata DB, and `data_interval_start` is
+        # not a context key at all. Only scheduled runs carry an interval, so
+        # all three cases have to be handled explicitly rather than assumed.
+        import logging
+
+        import pendulum
+
+        log = logging.getLogger(__name__)
+        context = get_current_context()
+        params = context.get("params") or {}
+
+        window_start = getattr(context.get("dag_run"), "data_interval_start", None)
+
+        # Explicit override, for backfilling a specific past date by hand:
+        #   airflow dags trigger conjunction_screening \
+        #     -c '{"epoch_start": "2026-07-20T00:00:00Z"}'
+        override = params.get("epoch_start")
+        if override:
+            window_start = pendulum.parse(override)
+            log.info("Screening from explicit epoch_start=%s (backfill).", window_start)
+        elif window_start is not None:
+            log.info("Screening from data_interval_start=%s.", window_start)
+        else:
+            # Ad-hoc manual run with no interval and no override.
+            #
+            # Deliberately leave window_start as None rather than setting it to
+            # now(). Passing an explicit epoch_start makes the loader default
+            # `as_of` to it, which would flag a live screen as a backfill AND
+            # apply an `epoch <= as_of` filter that discards element sets with
+            # epochs slightly in the FUTURE — predictive elsets are normal, and
+            # this silently dropped 3 objects when it was tried.
+            #
+            # Leaving it None means the screen runs live, exactly as before.
+            log.warning(
+                "Manual run with no data interval and no epoch_start param. "
+                "Screening live from now; this run is NOT reproducible and a "
+                "repeat trigger will append a new run rather than merge it."
+            )
 
         conn = BaseHook.get_connection(POSTGRES_CONN_ID)
         credentials = {
@@ -98,9 +156,16 @@ def conjunction_screening():
             "port": conn.port or 5432,
         }
 
+        screen_kwargs: dict = {}
+        if window_start is not None:
+            # Only set for a scheduled interval or an explicit backfill. Omitted
+            # entirely for a live manual run — see the branch above.
+            screen_kwargs["epoch_start"] = window_start
+
         return load_conjunction_screening(
             credentials=credentials,
             window_hours=SCREENING_WINDOW_HOURS,
+            **screen_kwargs,
         )
 
     dbt_models = DbtTaskGroup(

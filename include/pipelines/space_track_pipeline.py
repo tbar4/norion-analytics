@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -73,9 +74,22 @@ QUERY_PATH = "/basicspacedata/query"
 # Space-Track asks callers to identify themselves.
 USER_AGENT = "norion-warehouse/1.0 (+trevor.barnes91@gmail.com)"
 
-# Seconds to wait between queries. The documented ceiling is 30/min, and this
-# module issues two requests per run, so this is courtesy rather than
-# necessity — it costs nothing and keeps us visibly well-behaved.
+# RATE LIMITING — Space-Track enforces these, and exceeding them gets accounts
+# suspended rather than merely throttled.
+#
+# Documented ceilings: fewer than 30 requests per minute and 300 per hour. The
+# budgets below sit deliberately under both, because the ceiling is shared with
+# anything else using the same account (a notebook, a manual query in the web
+# UI) and arriving exactly at the limit leaves no room for that.
+#
+# The routine run makes two requests and never comes near this. The limiter
+# exists for the gp_history BACKFILL, which issues one request per day of
+# history and is the only thing here capable of getting the account into
+# trouble.
+MAX_REQUESTS_PER_MINUTE = 20
+MAX_REQUESTS_PER_HOUR = 200
+
+# Floor between any two requests, independent of the rolling windows above.
 REQUEST_SPACING_SECONDS = 3.0
 
 # How long a single query may take. The full-catalogue GP query returns tens of
@@ -98,6 +112,82 @@ GP_QUERY = (
 
 # Upcoming conjunctions. Optional — see module docstring.
 CDM_QUERY = "/class/cdm_public/TCA/%3Enow/orderby/TCA/format/json"
+
+# Historical element sets, for backfill. Same predicates as the gp class; the
+# database holds ~138 million elsets, so this is ALWAYS queried in bounded
+# windows and never unfiltered.
+#
+# Chunked by CREATION_DATE — the field that records when Space-Track published
+# an elset — rather than by EPOCH. The distinction matters: EPOCH is when the
+# orbit solution is valid, CREATION_DATE is when it became knowable. Chunking on
+# EPOCH would produce overlapping, unstable windows because a single publication
+# can carry an epoch days earlier.
+GP_HISTORY_QUERY = (
+    "/class/gp_history/decay_date/null-val"
+    "/CREATION_DATE/{start}--{end}"
+    "/orderby/NORAD_CAT_ID,EPOCH/format/json"
+)
+
+# One request per day of backfill. A day of the full catalogue is on the order
+# of tens of thousands of elsets, which Space-Track serves comfortably; a
+# multi-day window in one request is what times out.
+GP_HISTORY_CHUNK_DAYS = 1
+
+
+class _RateLimiter:
+    """Enforce Space-Track's per-minute and per-hour request ceilings.
+
+    A fixed sleep between requests is not enough on its own: it satisfies the
+    per-minute rule while still drifting past the hourly one over a long
+    backfill. This tracks actual request timestamps and blocks until BOTH
+    rolling windows have room.
+
+    Not thread-safe, which is fine — the pipeline issues requests serially and
+    should keep doing so. Parallelising them is precisely what the ceilings
+    exist to prevent.
+    """
+
+    def __init__(
+        self,
+        per_minute: int = MAX_REQUESTS_PER_MINUTE,
+        per_hour: int = MAX_REQUESTS_PER_HOUR,
+        spacing_seconds: float = REQUEST_SPACING_SECONDS,
+    ) -> None:
+        self.per_minute = per_minute
+        self.per_hour = per_hour
+        self.spacing_seconds = spacing_seconds
+        self._times: list[float] = []
+
+    def _sleep_needed(self, now: float) -> float:
+        # Drop anything outside the longest window we care about.
+        self._times = [t for t in self._times if now - t < 3600.0]
+
+        waits = [0.0]
+
+        if self._times:
+            waits.append(self.spacing_seconds - (now - self._times[-1]))
+
+        recent_minute = [t for t in self._times if now - t < 60.0]
+        if len(recent_minute) >= self.per_minute:
+            # Wait until the oldest request in this minute falls out of it.
+            waits.append(60.0 - (now - recent_minute[0]))
+
+        if len(self._times) >= self.per_hour:
+            waits.append(3600.0 - (now - self._times[0]))
+
+        return max(waits)
+
+    def acquire(self) -> None:
+        """Block until another request is permitted, then record it."""
+        while True:
+            now = time.monotonic()
+            wait = self._sleep_needed(now)
+            if wait <= 0:
+                self._times.append(now)
+                return
+            if wait > 5.0:
+                logger.info("Rate limit: waiting %.0fs before next Space-Track request.", wait)
+            time.sleep(wait)
 
 
 def _state_dir() -> str:
@@ -143,8 +233,18 @@ def _login(identity: str, password: str) -> requests.Session:
     return session
 
 
-def _query(session: requests.Session, query: str) -> list[dict]:
-    """Run one Space-Track query and return its rows."""
+def _query(
+    session: requests.Session, query: str, limiter: Optional[_RateLimiter] = None
+) -> list[dict]:
+    """Run one Space-Track query and return its rows.
+
+    Every caller should pass the SAME limiter instance, so the per-minute and
+    per-hour budgets are shared across all resources in a run rather than being
+    counted separately per resource.
+    """
+    if limiter is not None:
+        limiter.acquire()
+
     url = f"{BASE_URL}{QUERY_PATH}{query}"
     logger.info("Space-Track query: %s", query)
 
@@ -165,8 +265,9 @@ def space_track_source(
     identity: str = dlt.secrets.value,
     password: str = dlt.secrets.value,
     include_cdm: bool = True,
+    history_days: int = 0,
 ) -> Any:
-    """The full on-orbit GP catalogue, plus CDMs when the account may see them.
+    """The full on-orbit GP catalogue, plus CDMs and optional historical backfill.
 
     Args:
         identity: Space-Track username. Auto-loaded from secrets.toml under
@@ -174,8 +275,22 @@ def space_track_source(
         password: Space-Track password. Auto-loaded the same way. Never logged.
         include_cdm: Attempt the CDM query. Leave True — the resource degrades
             to zero rows on a permission failure rather than erroring.
+        history_days: Days of gp_history to backfill. DEFAULT 0 = OFF, because
+            this is a one-off catch-up operation, not something a scheduled run
+            should repeat every 8 hours. Each day costs one request, so 14 days
+            is 14 requests spread over roughly a minute by the rate limiter.
+
+            Why you would use it: the conjunction screening engine estimates
+            covariance from the scatter across an object's recent element sets.
+            With no history every event falls back to default sigmas. Backfilling
+            two weeks makes that estimate real immediately instead of waiting two
+            weeks for it to accumulate.
     """
     session = _login(identity, password)
+
+    # One limiter shared by every resource, so the budget is counted across the
+    # whole run rather than per resource.
+    limiter = _RateLimiter()
 
     # TABLE NAMES ARE PREFIXED, unlike every other source here.
     #
@@ -195,9 +310,64 @@ def space_track_source(
         primary_key=["NORAD_CAT_ID", "EPOCH"],
     )
     def gp() -> Iterator[dict]:
-        rows = _query(session, GP_QUERY)
+        rows = _query(session, GP_QUERY, limiter)
         logger.info("Space-Track GP returned %d objects.", len(rows))
         yield from rows
+
+    # Historical elsets, written to the SAME table as the current catalogue.
+    #
+    # That is deliberate rather than lazy: gp_history uses the same predicates
+    # and returns the same shape as gp, and the screening engine's covariance
+    # estimate wants one continuous per-object history to measure scatter
+    # across. Splitting them would mean every consumer had to union two tables
+    # and dedupe them. The merge key makes the overlap safe — a historical
+    # elset that is also the current one collapses to a single row.
+    @dlt.resource(
+        name="space_track_gp",
+        write_disposition="merge",
+        primary_key=["NORAD_CAT_ID", "EPOCH"],
+    )
+    def gp_history() -> Iterator[dict]:
+        if history_days <= 0:
+            return
+
+        logger.info(
+            "Backfilling %d days of gp_history in %d-day chunks "
+            "(~%d requests, rate limited to %d/min and %d/hr).",
+            history_days,
+            GP_HISTORY_CHUNK_DAYS,
+            -(-history_days // GP_HISTORY_CHUNK_DAYS),
+            MAX_REQUESTS_PER_MINUTE,
+            MAX_REQUESTS_PER_HOUR,
+        )
+
+        today = datetime.now(timezone.utc).date()
+        total = 0
+        for offset in range(history_days, 0, -GP_HISTORY_CHUNK_DAYS):
+            start = today - timedelta(days=offset)
+            end = start + timedelta(days=GP_HISTORY_CHUNK_DAYS)
+            query = GP_HISTORY_QUERY.format(
+                start=start.isoformat(), end=end.isoformat()
+            )
+            try:
+                rows = _query(session, query, limiter)
+            except (requests.HTTPError, RuntimeError) as exc:
+                # One bad window must not discard the windows already fetched.
+                # Log it and continue: a backfill with a gap is still far more
+                # useful than no backfill, and the gap is visible in the log.
+                logger.warning(
+                    "gp_history chunk %s..%s failed (%s). Continuing; this "
+                    "window will be missing from the backfill.",
+                    start,
+                    end,
+                    exc,
+                )
+                continue
+            total += len(rows)
+            logger.info("gp_history %s..%s -> %d elsets", start, end, len(rows))
+            yield from rows
+
+        logger.info("gp_history backfill complete: %d elsets.", total)
 
     @dlt.resource(
         name="space_track_cdm_public",
@@ -205,9 +375,8 @@ def space_track_source(
         primary_key="CDM_ID",
     )
     def cdm_public() -> Iterator[dict]:
-        time.sleep(REQUEST_SPACING_SECONDS)
         try:
-            rows = _query(session, CDM_QUERY)
+            rows = _query(session, CDM_QUERY, limiter)
         except (requests.HTTPError, RuntimeError) as exc:
             # Expected for an account without an SSA Sharing Agreement or ODR.
             # Yield nothing rather than failing the whole load: the GP catalogue
@@ -225,6 +394,8 @@ def space_track_source(
         yield from rows
 
     resources = [gp]
+    if history_days > 0:
+        resources.append(gp_history)
     if include_cdm:
         resources.append(cdm_public)
     return resources
@@ -235,6 +406,7 @@ def load_space_track(
     password: Optional[str] = None,
     credentials: Optional[dict] = None,
     include_cdm: bool = True,
+    history_days: int = 0,
     dev_mode: bool = False,
     destination_override: Optional[Any] = None,
 ) -> str:
@@ -247,6 +419,8 @@ def load_space_track(
             password/host/port. Omit to fall back to secrets.toml. The Airflow
             DAG builds this from the `norion-analytics-pg` Connection.
         include_cdm: Attempt the CDM resource.
+        history_days: Days of gp_history to backfill. 0 (default) skips it —
+            this is a one-off catch-up, not something a scheduled run repeats.
         dev_mode: Load into a fresh timestamped dataset instead of `raw`.
         destination_override: A dlt destination to use instead of Postgres, for
             smoke testing without warehouse credentials. Airflow never passes it.
@@ -256,7 +430,7 @@ def load_space_track(
     """
     # Omitted args must stay *absent* rather than None, or an explicit None
     # would override dlt's secrets.toml resolution instead of deferring to it.
-    source_kwargs: dict = {"include_cdm": include_cdm}
+    source_kwargs: dict = {"include_cdm": include_cdm, "history_days": history_days}
     if identity is not None:
         source_kwargs["identity"] = identity
     if password is not None:

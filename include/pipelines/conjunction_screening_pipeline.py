@@ -51,7 +51,7 @@ KNOWN LIMITATIONS, stated because they change how the output should be read:
   * The coarse grid can miss a fast head-on conjunction. Two objects closing at
     v_rel are up to v_rel * dt / 2 apart at the nearest sample, so the coarse
     radius must exceed that or the pair is never a candidate. The defaults
-    (10 s, 100 km) cover closing speeds up to ~20 km/s, which spans the
+    (2 s, 25 km) cover closing speeds up to ~24 km/s, which spans the
     physically plausible range for Earth orbit, but tightening `coarse_step_s`
     is the lever if you distrust it.
   * Only ONE episode per pair per run is refined — the global coarse minimum.
@@ -71,6 +71,26 @@ KNOWN LIMITATIONS, stated because they change how the output should be read:
     Space-Track catalogue being loaded; without it this screens an incomplete
     universe and will silently under-report. The run row records how many
     objects were screened so this is visible rather than assumed.
+
+IDEMPOTENCY AND BACKFILL
+------------------------
+`screening_run_id` is derived from the screening WINDOW START, not from
+wall-clock time, so re-running an interval merges over its own previous output
+instead of appending a second copy. That is what makes the pipeline safe to
+re-run and makes Airflow catchup coherent.
+
+Backfilling a past date requires `as_of` as well as `epoch_start`. The catalogue
+query otherwise selects the LATEST element set per object, so a backfill without
+`as_of` would propagate today's orbits from a past date — confident,
+plausible-looking numbers that nobody could have predicted at the time, which is
+worse than an error because nothing about the output looks wrong. `as_of` also
+bounds the covariance history, without which the estimate would see how each
+orbit actually resolved and report false confidence.
+
+Backfill depth is limited by how much element-set history exists. CelesTrak
+publishes only the current element set — there is no historical endpoint, so its
+history accumulates forward only. Space-Track's `gp_history` class is the way to
+obtain real depth; see the `history_days` argument on the space_track source.
 
 This module deliberately imports nothing from Airflow, so it stays runnable and
 testable outside the scheduler.
@@ -193,6 +213,7 @@ _CELESTRAK_BRANCH = """
         classification_type, element_set_no, rev_at_epoch,
         'celestrak' as catalogue_source, 2 as source_rank
     from analytics.stg_celestrak__gp
+    {as_of_filter}
 """
 
 _SPACE_TRACK_BRANCH = """
@@ -203,10 +224,26 @@ _SPACE_TRACK_BRANCH = """
         classification_type, element_set_no, rev_at_epoch,
         'space_track' as catalogue_source, 1 as source_rank
     from analytics.stg_space_track__gp
+    {as_of_filter}
 """
+
+# Applied to every catalogue branch when screening a past date.
+#
+# Without it a backfill selects TODAY'S element set and propagates it from a
+# past epoch, which produces confident, plausible-looking numbers that are not
+# what anyone could have predicted at the time. That is worse than an error,
+# because nothing about the output looks wrong.
+_AS_OF_FILTER = "where epoch <= %(as_of)s"
 
 # Recent element sets per object, for the covariance estimate. Ordered newest
 # first so a LIMIT per object takes the most recent ones.
+# Recent element sets per object, for the covariance estimate.
+#
+# The as_of bound applies here too, and for a subtler reason than the catalogue
+# query: element sets published AFTER the screening moment would let the
+# covariance estimate see how the orbit actually resolved. That is look-ahead
+# bias, and it would make a backfilled screen look more certain than the real
+# one ever could have been.
 HISTORY_SQL = """
 select
     norad_cat_id, epoch, mean_motion_rev_per_day, eccentricity, inclination_deg,
@@ -217,6 +254,7 @@ from (
     select *, row_number() over (partition by norad_cat_id order by epoch desc) as rn
     from analytics.stg_celestrak__gp
     where norad_cat_id = any(%(ids)s)
+      and (%(as_of)s is null or epoch <= %(as_of)s)
 ) ranked
 where rn <= %(max_sets)s
 order by norad_cat_id, epoch desc
@@ -231,8 +269,13 @@ def _table_exists(cur: Any, schema: str, name: str) -> bool:
     return cur.fetchone() is not None
 
 
-def _load_catalogue(cur: Any) -> list[dict]:
-    """Latest element set per object, preferring Space-Track where present."""
+def _load_catalogue(cur: Any, as_of: Optional[datetime] = None) -> list[dict]:
+    """Element set current as of `as_of`, per object, preferring Space-Track.
+
+    With as_of=None this is the latest element set per object — the live case.
+    With as_of set it is the element set that was current at that moment, which
+    is what makes a backfilled screen mean anything.
+    """
     branches = [_CELESTRAK_BRANCH]
     if _table_exists(cur, "analytics", "stg_space_track__gp"):
         branches.insert(0, _SPACE_TRACK_BRANCH)
@@ -244,9 +287,21 @@ def _load_catalogue(cur: Any) -> list[dict]:
             "under-report. Onboard the space_track source for full coverage."
         )
 
-    cur.execute(CATALOGUE_SQL.format(branches=" union all ".join(branches)))
+    as_of_filter = _AS_OF_FILTER if as_of is not None else ""
+    sql = CATALOGUE_SQL.format(
+        branches=" union all ".join(b.format(as_of_filter=as_of_filter) for b in branches)
+    )
+    cur.execute(sql, {"as_of": as_of} if as_of is not None else None)
     columns = [d[0] for d in cur.description]
-    return [dict(zip(columns, row)) for row in cur.fetchall()]
+    rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+    if as_of is not None:
+        logger.info(
+            "Backfill mode: selected the element set current as of %s (%d objects).",
+            as_of.isoformat(),
+            len(rows),
+        )
+    return rows
 
 
 def _init_satrec(record: dict) -> Any:
@@ -599,8 +654,20 @@ def screen_catalogue(
     hard_body_radius_km: float = DEFAULT_HARD_BODY_RADIUS_KM,
     max_objects: Optional[int] = None,
     epoch_start: Optional[datetime] = None,
+    as_of: Optional[datetime] = None,
 ) -> tuple[dict, list[dict]]:
-    """Run one full screen. Returns (run_summary, events)."""
+    """Run one full screen. Returns (run_summary, events).
+
+    Args:
+        epoch_start: When the screening window begins. Defaults to now.
+        as_of: Treat this as "the present" when choosing element sets — pick the
+            set current at this moment rather than the latest one, and ignore
+            history published after it. Set this for any backfill. Passing
+            epoch_start into the past WITHOUT as_of propagates today's elements
+            from a past date, which is physically meaningless; the two are
+            expected to move together and the loader defaults as_of to
+            epoch_start for exactly that reason.
+    """
     import psycopg2
     from sgp4.api import SatrecArray, jday
 
@@ -612,7 +679,7 @@ def screen_catalogue(
     # pass has decided which conjunctions survive.
     conn = psycopg2.connect(**dsn)
     cur = conn.cursor()
-    catalogue = _load_catalogue(cur)
+    catalogue = _load_catalogue(cur, as_of=as_of)
 
     if max_objects is not None:
         catalogue = catalogue[:max_objects]
@@ -709,7 +776,10 @@ def screen_catalogue(
 
     if involved:
         ids = [int(meta[k]["norad_cat_id"]) for k in involved]
-        cur.execute(HISTORY_SQL, {"ids": ids, "max_sets": DEFAULT_MAX_HISTORY_SETS})
+        cur.execute(
+            HISTORY_SQL,
+            {"ids": ids, "max_sets": DEFAULT_MAX_HISTORY_SETS, "as_of": as_of},
+        )
         columns = [d[0] for d in cur.description]
         by_object: dict[int, list[dict]] = {}
         for row in cur.fetchall():
@@ -732,7 +802,14 @@ def screen_catalogue(
 
     conn.close()
 
-    run_id = started.strftime("%Y%m%dT%H%M%SZ")
+    # Derived from the screening WINDOW, not from wall-clock time.
+    #
+    # This is what makes the pipeline idempotent. Keying on datetime.now()
+    # minted a fresh id on every execution, so re-running the same interval
+    # appended a second full set of rows instead of correcting the first.
+    # Keying on window_start means a re-run merges over its own previous
+    # output, and Airflow catchup becomes coherent.
+    run_id = window_start.strftime("%Y%m%dT%H%M%SZ")
     events: list[dict] = []
 
     for r in refined:
@@ -787,6 +864,8 @@ def screen_catalogue(
     summary = {
         "screening_run_id": run_id,
         "started_at": started.isoformat(),
+        "as_of": as_of.isoformat() if as_of else None,
+        "is_backfill": as_of is not None,
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "window_start": window_start.isoformat(),
         "window_hours": window_hours,
@@ -814,6 +893,14 @@ def screen_catalogue(
 @dlt.source(name="conjunction_screening")
 def conjunction_screening_source(dsn: dict, **screen_kwargs: Any) -> Any:
     """One screening run: a summary row plus the conjunctions it found."""
+    # Backfilling means moving the whole screen into the past, not just its
+    # window. Defaulting as_of to epoch_start makes that the automatic
+    # behaviour, so a caller cannot accidentally screen a past window using
+    # today's orbits — the one mistake here that produces plausible-looking
+    # nonsense rather than an error. An explicit as_of still wins.
+    if screen_kwargs.get("epoch_start") is not None and screen_kwargs.get("as_of") is None:
+        screen_kwargs["as_of"] = screen_kwargs["epoch_start"]
+
     summary, events = screen_catalogue(dsn, **screen_kwargs)
 
     @dlt.resource(

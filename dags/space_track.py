@@ -72,6 +72,18 @@ render_config = RenderConfig(
     max_active_runs=1,
     tags=["dlt", "space_track", "raw", "conjunction"],
     doc_md=__doc__,
+    # One-off historical backfill, off by default.
+    #
+    # Trigger this DAG with {"history_days": 14} to pull two weeks of
+    # gp_history. That is what turns the screening engine's covariance estimate
+    # from `fallback` into a measured one immediately, instead of waiting two
+    # weeks for history to accumulate forward.
+    #
+    # It is a PARAM rather than a constant because it must not run on every
+    # scheduled execution: each day of history costs one Space-Track request,
+    # and repeating a 14-request backfill three times a day is exactly the kind
+    # of pointless load their rate limits exist to stop.
+    params={"history_days": 0},
 )
 def space_track():
     # Retry at the orchestrator layer, as celestrak does. Space-Track is a
@@ -83,8 +95,12 @@ def space_track():
         # whole DAG file from parsing.
         from airflow.hooks.base import BaseHook
         from airflow.models import Variable
+        from airflow.sdk import get_current_context
 
         from pipelines.space_track_pipeline import load_space_track
+
+        context = get_current_context()
+        history_days = int((context["params"] or {}).get("history_days", 0))
 
         conn = BaseHook.get_connection(POSTGRES_CONN_ID)
         credentials = {
@@ -100,6 +116,7 @@ def space_track():
             identity=Variable.get(USER_VAR),
             password=Variable.get(PASSWORD_VAR),
             credentials=credentials,
+            history_days=history_days,
         )
 
     dbt_models = DbtTaskGroup(
