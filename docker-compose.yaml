@@ -1,0 +1,223 @@
+---
+# Apache Airflow 3.3.0 — LocalExecutor + FAB auth manager.
+#
+# Derived from the official 3.3.0 compose file:
+#   https://airflow.apache.org/docs/apache-airflow/stable/docker-compose.yaml
+#
+# Deliberate differences from the official file:
+#   * CeleryExecutor -> LocalExecutor, so Redis, the Celery worker and the
+#     Flower profile are all gone. Tasks run as subprocesses of the scheduler.
+#   * UI published on all interfaces (LAN-reachable at http://10.0.0.50:8080).
+#   * Example DAGs off.
+#   * include/ and tests/ mounted, and include/ added to PYTHONPATH.
+#   * Postgres password comes from .env instead of being hardcoded.
+#
+# WARNING: this is a local/homelab configuration, not a production deployment.
+
+x-airflow-common: &airflow-common
+  # Built locally from ./Dockerfile so dlt, Cosmos and dbt are baked in.
+  # Rebuild after editing requirements.txt / requirements-dbt.txt:
+  #   docker compose build && docker compose up -d
+  build: .
+  image: ${AIRFLOW_IMAGE_NAME:-airflow-local:3.3.0}
+  env_file:
+    - .env
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    # Airflow 3 defaults to SimpleAuthManager, which ignores
+    # _AIRFLOW_WWW_USER_PASSWORD and generates its own random password.
+    # FAB is what the official 3.3.0 compose uses and what makes the
+    # username/password in .env the credentials that actually work.
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${POSTGRES_PASSWORD}@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    # How the Task SDK in each task process talks back to the API server.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    # How often the dag-processor rescans dags/ for NEW files. Airflow's
+    # default is 300s, which makes a freshly added DAG look like a broken
+    # mount for up to 5 minutes. Edits to an already-known file are governed
+    # separately by min_file_process_interval (default 30s).
+    AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: '30'
+    AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    # Makes `from pipelines.example_pipeline import ...` work in your DAGs.
+    #
+    # CAREFUL: Python searches PYTHONPATH *before* site-packages, so a
+    # directory here that shares a name with an installed package shadows it.
+    # A folder called include/dlt/ or include/dbt/ would break `import dlt`
+    # and dbt itself. That is why the directories are named pipelines/ and
+    # dbt_projects/ rather than the obvious dlt/ and dbt/.
+    PYTHONPATH: '/opt/airflow/include'
+
+    # --- dlt + dbt ------------------------------------------------------
+    # Single source of truth for the warehouse file. profiles.yml reads it
+    # via env_var(), and the dlt pipeline reads it directly, so the two can
+    # never drift apart.
+    DBT_DUCKDB_PATH: '/opt/airflow/include/warehouse/warehouse.duckdb'
+    DBT_PROJECT_DIR: '/opt/airflow/include/dbt_projects/warehouse'
+    DBT_PROFILES_DIR: '/opt/airflow/include/dbt_projects/warehouse'
+    # If you later put this behind nginx-proxy, set the public URL here so the
+    # UI builds correct links:
+    # AIRFLOW__API__BASE_URL: 'https://airflow.example.com'
+  volumes:
+    - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
+    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
+    - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
+    - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - ${AIRFLOW_PROJ_DIR:-.}/include:/opt/airflow/include
+    - ${AIRFLOW_PROJ_DIR:-.}/tests:/opt/airflow/tests
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: airflow
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    # No ports: block on purpose — Postgres is reachable only on the compose
+    # network, never from the host.
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  # The web UI and the REST/execution API. In Airflow 3 this replaces the
+  # Airflow 2 `webserver` command.
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      # Exposed on the LAN over plain HTTP. Anyone who can reach tbsrv on
+      # 8080 gets the login page, and credentials cross the network in the
+      # clear. Fine on a trusted home network; put it behind nginx-proxy with
+      # TLS before it ever faces anything less trusted.
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Airflow 3 parses DAG files in a dedicated process rather than inside the
+  # scheduler, so this is a required service, not an optional extra.
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Runs deferred tasks / async sensors. Harmless to keep even if unused.
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # One-shot bootstrap: runs the DB migration and creates the admin user, then
+  # exits. Every other service waits for it to complete successfully.
+  #
+  # The `/entrypoint airflow version` call below is what actually triggers the
+  # migration and user creation — the image entrypoint acts on the
+  # _AIRFLOW_DB_MIGRATE / _AIRFLOW_WWW_USER_CREATE variables set further down.
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        mkdir -p /opt/airflow/{logs,dags,plugins,config,include,tests}
+        mkdir -p /opt/airflow/include/warehouse
+        echo "Airflow version:"
+        /entrypoint airflow version
+        echo "Writing default config if missing..."
+        /entrypoint airflow config list >/dev/null
+        # DuckDB allows exactly one writing process at a time. Cosmos renders
+        # each dbt model as its own task and would happily run them in
+        # parallel, so every task that touches the warehouse is funnelled
+        # through this 1-slot pool. Without it you get intermittent
+        # "Could not set lock on file" failures under load.
+        echo "Creating the duckdb serialisation pool..."
+        /entrypoint airflow pools set duckdb 1 "Serialises writers to the DuckDB warehouse file"
+        echo "Fixing ownership to ${AIRFLOW_UID:-50000}:0 ..."
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/{logs,dags,plugins,config,include,tests}
+        echo "Init complete."
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD}
+    # Runs as root so it can chown the bind-mounted host directories.
+    user: "0:0"
+
+  # Not started by default. Use it for one-off CLI work:
+  #   docker compose run --rm airflow-cli airflow dags list
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    command:
+      - bash
+      - -c
+      - airflow
+    depends_on:
+      <<: *airflow-common-depends-on
+
+volumes:
+  postgres-db-volume:

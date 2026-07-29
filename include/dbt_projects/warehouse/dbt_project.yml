@@ -1,0 +1,45 @@
+name: "warehouse"
+version: "1.0.0"
+config-version: 2
+
+profile: "warehouse"
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Everything lands in one schema, `analytics`, which comes from the profile.
+#
+# Deliberately no +schema anywhere in this file: dbt APPENDS a custom schema to
+# the profile's, so `+schema: staging` would produce `analytics_staging` rather
+# than `staging`. Splitting the layers by schema would mean overriding the
+# generate_schema_name macro — more machinery than the split is worth. The
+# stg_ prefix distinguishes the layers instead.
+models:
+  warehouse:
+    # Staging is a thin, 1:1 rename-and-cast over one dlt raw table. Views, so
+    # they cost nothing to rebuild and always reflect the latest load.
+    staging:
+      +materialized: view
+
+      # One block per onboarded source. The tag is what that source's Airflow
+      # DAG selects on (`tag:<source>+`), so each DAG builds only its own slice
+      # of the graph rather than the whole project. Tagging the folder rather
+      # than the model means a new model added to the folder inherits the tag
+      # automatically — nothing to remember when you add a table.
+      nasa_apod:
+        +tags: ["nasa_apod"]
+
+    # Marts are business-facing and are what Cube and Metabase read. Tables
+    # rather than views, so a dashboard load reads precomputed results instead
+    # of re-running the SQL. Untagged on purpose: marts are reached through the
+    # `+` in `tag:<source>+`, which means a mart spanning two sources is
+    # correctly rebuilt by whichever source lands.
+    marts:
+      +materialized: table

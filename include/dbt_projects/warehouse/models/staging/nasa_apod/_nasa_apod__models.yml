@@ -1,0 +1,33 @@
+version: 2
+
+# Tests belong here, on the MODEL, not only on the source in
+# _nasa_apod__sources.yml. Cosmos's default TestBehavior.AFTER_EACH renders a
+# test task after each *model*; a test attached to a source has no model to
+# hang off, so it parses but never runs in Airflow. Source tests still run
+# under a manual `dbt build`.
+
+models:
+  - name: stg_nasa_apod__apod
+    description: >
+      Typed 1:1 view over raw.apod — one row per calendar day across the
+      trailing window loaded by the nasa_apod pipeline.
+    columns:
+      - name: apod_date
+        description: APOD publication date, cast to DATE. Natural key.
+        data_tests:
+          - not_null
+          - unique
+      - name: media_type
+        description: '"image" or "video".'
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["image", "video"]
+      - name: title
+        data_tests:
+          - not_null
+      - name: url
+        description: Media URL. Present for both images and videos.
+        data_tests:
+          - not_null

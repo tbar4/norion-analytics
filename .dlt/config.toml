@@ -1,0 +1,14 @@
+# put your configuration values here
+
+[runtime]
+log_level="WARNING"  # the system log level of dlt
+# use the dlthub_telemetry setting to enable/disable anonymous usage data reporting, see https://dlthub.com/docs/reference/telemetry
+dlthub_telemetry = true
+
+[normalize.parquet_normalizer]
+# emit _dlt_load_id for arrow/parquet data
+add_dlt_load_id = true
+
+[workspace.settings]
+name = "airflow"
+

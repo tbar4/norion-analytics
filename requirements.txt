@@ -1,0 +1,37 @@
+# Python dependencies for the MAIN Airflow environment, baked in by the
+# Dockerfile. dbt is deliberately NOT here — it lives in its own venv, see
+# requirements-dbt.txt.
+#
+# Do NOT list apache-airflow here — the Dockerfile already pins it.
+#
+# After editing:  docker compose build && docker compose up -d
+#
+# --- Matching local env with uv -----------------------------------------
+# apache/airflow:3.3.0 runs Python 3.13 (verified with `python --version`
+# inside the running container — the docs page still says 3.12). To get an
+# editor/pytest environment that resolves the same way the image does:
+#
+#   uv venv --python 3.13
+#   uv pip install -r requirements.txt "apache-airflow==3.3.0" \
+#     -c https://raw.githubusercontent.com/apache/airflow/constraints-3.3.0/constraints-3.13.txt
+#
+# That -c constraints file is Airflow's own tested dependency set and is the
+# difference between a clean resolve and a very long backtrack.
+
+# Extract + load. dlt is imported directly by DAG code, so it must live in
+# the same environment as Airflow.
+#
+# Both destination extras are present during the DuckDB -> Postgres move:
+# postgres is where new pipelines land, duckdb is still what the example DAG
+# and the dbt `warehouse` project read. Drop the duckdb extra (and the pin
+# below) once dbt has been repointed at Postgres.
+dlt[duckdb,postgres]==1.29.1
+
+# Renders each dbt model as its own Airflow task.
+astronomer-cosmos==1.15.0
+
+# Pinned to exactly the version in requirements-dbt.txt. dlt writes the
+# DuckDB file and dbt reads it, so a version skew between the two
+# environments can produce "database was created with a different version"
+# errors. Bump both files together, never one alone.
+duckdb==1.5.5

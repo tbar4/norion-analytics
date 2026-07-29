@@ -1,0 +1,27 @@
+# This file is for running dbt BY HAND (dbt run / dbt build from a shell).
+#
+# Airflow does NOT use it. Cosmos builds its own profile at runtime from the
+# `norion-analytics-pg` Airflow Connection via PostgresUserPasswordProfileMapping,
+# so the warehouse password lives in exactly one place — Airflow — and is never
+# written into this repo.
+#
+# For manual runs, export the vars below first. The password is the only
+# secret and is read from the environment, never committed:
+#
+#   export DBT_PG_PASSWORD=...          # same value as the Airflow connection
+#   dbt build --project-dir include/dbt_projects/warehouse
+
+warehouse:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DBT_PG_HOST', '10.0.0.50') }}"
+      port: "{{ env_var('DBT_PG_PORT', '5432') | int }}"
+      user: "{{ env_var('DBT_PG_USER', 'tbarnes') }}"
+      password: "{{ env_var('DBT_PG_PASSWORD', '') }}"
+      dbname: "{{ env_var('DBT_PG_DBNAME', 'warehouse') }}"
+      schema: analytics
+      # Postgres handles concurrent writers, so the single-threaded constraint
+      # DuckDB forced is no longer needed.
+      threads: 4

@@ -1,0 +1,36 @@
+version: 2
+
+# One sources file per onboarded source, living beside that source's staging
+# models. `raw` is the dlt dataset_name — dlt creates the schema in the
+# Postgres `warehouse` database and dbt reads from it, so the `schema:` below
+# must match `dataset_name` in include/pipelines/nasa_apod_pipeline.py.
+#
+# The source NAME is per-source (`nasa_apod`) while the SCHEMA is shared
+# (`raw`). Every source declares the same schema and its own name, so
+# `source('nasa_apod', 'apod')` reads raw.apod without the sources of different
+# pipelines colliding in one file.
+
+sources:
+  - name: nasa_apod
+    schema: raw
+    description: >
+      Landing tables written by include/pipelines/nasa_apod_pipeline.py.
+      Loaded with write_disposition "replace" over a trailing date window, so
+      the table is a full snapshot of that window rather than an append log.
+    tables:
+      - name: apod
+        description: >
+          NASA Astronomy Picture of the Day, one row per calendar day.
+        columns:
+          - name: date
+            description: APOD publication date, YYYY-MM-DD. Natural key.
+          - name: media_type
+            description: '"image" or "video".'
+          - name: copyright
+            description: >
+              Attribution. NULL for public-domain entries, which is common —
+              do not treat NULL here as a load failure.
+          - name: hdurl
+            description: >
+              High-resolution still. NULL for video entries, which have no HD
+              image.

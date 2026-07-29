@@ -1,0 +1,32 @@
+version: 2
+
+# One file for all marts. Marts are business-facing and cross-source by
+# nature, so grouping them per-source the way staging does would put related
+# models in unrelated files.
+
+models:
+  - name: apod_daily
+    description: >
+      Astronomy Picture of the Day, one row per calendar day over the trailing
+      window loaded by the nasa_apod pipeline. The model Cube's `apod_daily`
+      cube is built on.
+    columns:
+      - name: apod_date
+        description: APOD publication date. Natural key.
+        data_tests:
+          - not_null
+          - unique
+      - name: media_type
+        description: '"image" or "video".'
+        data_tests:
+          - not_null
+      - name: is_public_domain
+        description: >
+          True when the API returned no copyright holder. Common and expected —
+          roughly a third of entries.
+        data_tests:
+          - not_null
+      - name: is_video
+        description: True for media_type = 'video'. These rows have no hdurl.
+        data_tests:
+          - not_null

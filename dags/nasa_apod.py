@@ -1,0 +1,102 @@
+"""NASA Astronomy Picture of the Day -> Postgres schema `raw`.
+
+Credentials live in Airflow, not in .dlt/secrets.toml: the `NASA_API_KEY`
+Variable and the `norion-analytics-pg` Connection. This DAG reads both and
+hands them to the pipeline explicitly, so the pipeline module itself stays
+free of Airflow imports and remains runnable on the workstation.
+
+The Connection points at 10.0.0.50 — the host's LAN address — rather than a
+docker network alias. That is what lets the scheduler reach postgres_db,
+which sits on the separate `postgres_default` bridge network.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
+from airflow.sdk import dag, task
+from cosmos import (
+    DbtTaskGroup,
+    ExecutionConfig,
+    ProfileConfig,
+    ProjectConfig,
+    RenderConfig,
+)
+from cosmos.profiles import PostgresUserPasswordProfileMapping
+
+POSTGRES_CONN_ID = "norion-analytics-pg"
+NASA_API_KEY_VAR = "NASA_API_KEY"
+
+# The dbt tag this source owns, set on the staging folder in dbt_project.yml.
+SOURCE_TAG = "nasa_apod"
+
+DBT_PROJECT_DIR = Path("/opt/airflow/include/dbt_projects/warehouse")
+
+# Cosmos generates dbt's profile from the Airflow Connection, so the warehouse
+# password is never written to profiles.yml. That file is only for running dbt
+# by hand.
+profile_config = ProfileConfig(
+    profile_name="warehouse",
+    target_name="dev",
+    profile_mapping=PostgresUserPasswordProfileMapping(
+        conn_id=POSTGRES_CONN_ID,
+        profile_args={"schema": "analytics"},
+    ),
+)
+
+# dbt lives in its own virtualenv, so Cosmos is told where the binary is
+# rather than importing dbt from the Airflow environment.
+execution_config = ExecutionConfig(dbt_executable_path="/opt/dbt-venv/bin/dbt")
+
+# APOD publishes once a day. A trailing window on every run means a late or
+# corrected entry gets picked up rather than being missed permanently.
+DAYS_BACK = 365
+
+
+@dag(
+    dag_id="nasa_apod",
+    schedule="0 6 * * *",
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    tags=["dlt", "nasa", "raw"],
+    doc_md=__doc__,
+)
+def nasa_apod():
+    @task
+    def load() -> str:
+        # Imported inside the task so a broken pipeline module can't stop the
+        # whole DAG file from parsing.
+        from airflow.hooks.base import BaseHook
+        from airflow.models import Variable
+
+        from pipelines.nasa_apod_pipeline import load_apod
+
+        conn = BaseHook.get_connection(POSTGRES_CONN_ID)
+        credentials = {
+            "database": conn.schema,
+            "username": conn.login,
+            "password": conn.password,
+            "host": conn.host,
+            "port": conn.port or 5432,
+        }
+
+        return load_apod(
+            api_key=Variable.get(NASA_API_KEY_VAR),
+            credentials=credentials,
+            days_back=DAYS_BACK,
+        )
+
+    dbt_models = DbtTaskGroup(
+        group_id="dbt_warehouse",
+        project_config=ProjectConfig(dbt_project_path=DBT_PROJECT_DIR),
+        profile_config=profile_config,
+        execution_config=execution_config,
+    )
+
+    # No pool here: the old 1-slot `duckdb` pool existed because DuckDB allows
+    # a single writer. Postgres does not need it.
+    load() >> dbt_models
+
+
+nasa_apod()

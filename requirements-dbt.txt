@@ -1,0 +1,20 @@
+# Python dependencies for the ISOLATED dbt virtualenv at /opt/dbt-venv.
+#
+# Kept apart from the Airflow environment on purpose: dbt drags in a large
+# tree (dbt-adapters, dbt-common, dbt-protos, metricflow, sqlglot, agate)
+# and pinning it against Airflow's own dependencies makes both harder to
+# upgrade. Cosmos never imports dbt — it shells out to the binary — so
+# isolation costs nothing.
+#
+# After editing:  docker compose build && docker compose up -d
+
+dbt-core==1.12.0
+
+# Postgres is the warehouse. dbt-postgres 1.11.0 declares dbt-core >=1.8,<2.0,
+# so it resolves against the pin above.
+#
+# There is no version-matching requirement between this file and
+# requirements.txt any more: dlt and dbt now talk to a Postgres *server* over
+# the wire rather than sharing a DuckDB file on disk, so the on-disk format
+# skew that forced the old duckdb==1.5.5 pin in both files is gone.
+dbt-postgres==1.11.0

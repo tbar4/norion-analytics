@@ -1,0 +1,39 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets — never commit credentials.
+# .env holds POSTGRES_PASSWORD, FERNET_KEY, the API JWT secret and the
+# Airflow web password. Airflow Variables/Connections are the source of
+# truth for pipeline credentials; nothing secret belongs in this repo.
+.env
+.env.*
+!.env.example
+.dlt/secrets.toml
+*.secrets.toml
+
+# Airflow runtime state — logs contain rendered task output, which can
+# include credentials passed to a task.
+logs/
+airflow.db
+airflow.cfg
+webserver_config.py
+
+# Warehouse artifacts. Postgres is the warehouse now; these are leftovers
+# from the DuckDB era plus dlt's local load/state files.
+*.duckdb
+*.duckdb.wal
+include/warehouse/
+
+# dbt build output
+target/
+dbt_packages/
+logs/dbt.log
+.user.yml

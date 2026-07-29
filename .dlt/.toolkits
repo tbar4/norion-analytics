@@ -1,0 +1,116 @@
+init:
+  version: 0.1.1
+  description: Shared rules, secrets handling, and workspace MCP for dlthub
+  tags:
+  - dlthub
+  - init
+  - rules
+  - secrets
+  - mcp
+  installed_at: '2026-07-29T00:43:34.715572+00:00'
+  agent: claude
+  files:
+    .claude/skills/dlthub-router/SKILL.md:
+      sha3_256: af56355d874845d1e58f9e5dcefbc929b9cdd2ce92162cf16814a66016c58396
+    .claude/skills/improve-skills/SKILL.md:
+      sha3_256: c52b222d82d101eaacbbf19d271d3f24b20d8e2bc70d49919d56144d448cd5c4
+    .claude/skills/setup-secrets/SKILL.md:
+      sha3_256: 83fb6e1af003c065ce3bb26042f0e2de24a22df14353db23ad4f6192d90e7785
+    .claude/skills/setup-secrets/cli-reference.md:
+      sha3_256: b3aed4466ecb84770e11176b5b07b109093c72808c44b73d02c5cd789af86c97
+    .claudeignore:
+      sha3_256: 1aa4dc9286dd219dcb55399f388c5ee1f940ab5e399a42b644d488cba57a9ec0
+    .claude/rules/init-dlthub-workspace.md:
+      sha3_256: bd0d85b8bf6b0e0ce454982cfa1f63baddc67cbd1f9d05254a4b6185b48643c0
+  mcp_servers:
+  - dlt-workspace-mcp
+  name: init
+rest-api-pipeline:
+  version: 0.1.1
+  description: 'Build REST API pipelines with dlt: scope, debug and validate data'
+  tags:
+  - dlthub
+  - etl
+  - data-pipeline
+  - python
+  dependencies:
+  - init
+  workflow_entry_skill: find-source
+  installed_at: '2026-07-29T00:47:16.445105+00:00'
+  agent: claude
+  files:
+    .claude/skills/adjust-endpoint/SKILL.md:
+      sha3_256: a1c003779d3a3badf4d986d170137f292df522faa7caab0c388aedde4bfd6b7f
+    .claude/skills/create-rest-api-pipeline/SKILL.md:
+      sha3_256: 86ad76aac7c754d6fc003b9bc2243a1bf43588ecec9beec3bcb4d8a4c77c26d3
+    .claude/skills/debug-pipeline/SKILL.md:
+      sha3_256: 6c97e01a401377d513d641e3c88156b8b5870ea35735c316a92ebdc583040926
+    .claude/skills/find-source/SKILL.md:
+      sha3_256: 88d4f23b81180caa64a1c0a40334251a495bdde0291ec1271b51a1347fdfb7ef
+    .claude/skills/new-endpoint/SKILL.md:
+      sha3_256: 6a3cf8cae9a11b3447fe2e5695b1809a9f91c2abf07933b42fe82d1f50b513ff
+    .claude/skills/optimize-rest-api-performance/SKILL.md:
+      sha3_256: c271078ccb5b7356b8ef95da45c6325b91abea3c09adccac98c1ba3b04a49709
+    .claude/skills/validate-data/SKILL.md:
+      sha3_256: 641a7202879d478dcc82f098216f781bbadeeb70e4b94e189249d688fe4ebba6
+    .claude/skills/view-data/SKILL.md:
+      sha3_256: cd6a3269960b5d9e221119f161a39c53774989b4fc9da7106ed6cc9cea3069c1
+    .claude/rules/rest-api-pipeline-workflow.md:
+      sha3_256: 6ef4a26b38cb6460e94ebf16536f9889d4d9ce38ebc794f6e11c533e6f1d19e6
+  name: rest-api-pipeline
+sql-database-pipeline:
+  version: 0.1.1
+  description: 'Build SQL database pipelines with dlt: connect to any SQL source,
+    load tables to a destination, tune performance with backends'
+  tags:
+  - dlthub
+  - etl
+  - data-pipeline
+  - python
+  - sql
+  - database
+  dependencies:
+  - init
+  workflow_entry_skill: find-source
+  installed_at: '2026-07-29T00:48:12.389014+00:00'
+  agent: claude
+  files:
+    .claude/skills/add-table/SKILL.md:
+      sha3_256: 3bfd4cb487748055e6d52106bff21364292860e872a98245c705c1f75f7c5435
+    .claude/skills/adjust-table/SKILL.md:
+      sha3_256: d1524e7501c8c691b4ac59546164600e64cb4237d300a371de86ad46a2f174d9
+    .claude/skills/create-sql-database-pipeline/SKILL.md:
+      sha3_256: 75b606087b21fe5893835ded8863598b40b6274dc70efa2a444d3f6adf0db493
+    .claude/skills/optimize-sql-performance/SKILL.md:
+      sha3_256: 479fecc45b0b3e5d48cf1b8faf7a90052cf05eea03d69866d1cc85a11801f022
+    .claude/rules/sql-database-pipeline-workflow.md:
+      sha3_256: 805786359d759b42b6da1e5cc6d5858cc2ad58c26e96bfcbf9c2f2576cf365f1
+  name: sql-database-pipeline
+filesystem-pipeline:
+  version: 0.1.1
+  description: Load files (CSV, Parquet, JSONL, or custom) from local disk, S3, GCS,
+    Azure, or SFTP into a destination using dlt's filesystem source.
+  tags:
+  - dlthub
+  - filesystem
+  - s3
+  - gcs
+  - azure
+  - sftp
+  - csv
+  - parquet
+  - jsonl
+  dependencies:
+  - init
+  workflow_entry_skill: create-filesystem-pipeline
+  installed_at: '2026-07-29T00:48:41.153646+00:00'
+  agent: claude
+  files:
+    .claude/skills/add-incremental-loading/SKILL.md:
+      sha3_256: 8fd5ee5ae1bdaeca3d154871774bd8e16b0eabbc70fc1b5f1967554b7a61cadf
+    .claude/skills/create-filesystem-pipeline/SKILL.md:
+      sha3_256: 98109cbd084ab77fbfe33c1253a5b414e5466b3bd0581469c37e371ac8d33f60
+    .claude/skills/optimize-filesystem-performance/SKILL.md:
+      sha3_256: 630e89afb9739a4b37ad171ac750317fbff68fe425607852f0592eeb816dc474
+    .claude/rules/filesystem-pipeline-workflow.md:
+      sha3_256: 29317f628e0f1e746b9b78980d34d12fde399bb2ac38a41a3757eb610571b007
