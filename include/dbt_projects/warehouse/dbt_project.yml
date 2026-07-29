@@ -39,6 +39,12 @@ models:
       nasa_donki:
         +tags: ["nasa_donki"]
 
+      nasa_neo_feed:
+        +tags: ["nasa_neo_feed"]
+
+      celestrak:
+        +tags: ["celestrak"]
+
     # Marts are business-facing and are what Cube and Metabase read. Tables
     # rather than views, so a dashboard load reads precomputed results instead
     # of re-running the SQL. Untagged on purpose: marts are reached through the

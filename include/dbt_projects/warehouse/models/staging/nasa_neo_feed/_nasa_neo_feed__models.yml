@@ -1,0 +1,69 @@
+version: 2
+
+# Tests belong here, on the MODEL, not only on the source in
+# _nasa_neo_feed__sources.yml. Cosmos's default TestBehavior.AFTER_EACH renders
+# a test task after each *model*; a test attached to a source has no model to
+# hang off, so it parses but never runs in Airflow.
+
+models:
+  - name: stg_nasa_neo_feed__neo_feed
+    description: >
+      Typed 1:1 view over raw.neo_feed — one row per asteroid per
+      close-approach date, across the trailing window loaded by the
+      nasa_neo_feed pipeline.
+    # The grain is (asteroid_id, close_approach_date) — neither column is
+    # unique alone. Asserting a composite key with the built-in `unique` test
+    # is not possible; that needs dbt_utils, which this project does not
+    # install. The assertion lives on `approach_key` in neo_close_approaches
+    # instead, following the `event_key` precedent in space_weather_events.
+    columns:
+      - name: asteroid_id
+        description: NASA JPL small-body id. Not unique on its own.
+        data_tests:
+          - not_null
+      - name: close_approach_date
+        description: Date of this close approach, cast to DATE.
+        data_tests:
+          - not_null
+      - name: name
+        data_tests:
+          - not_null
+      - name: is_potentially_hazardous_asteroid
+        description: NASA's PHA flag. Not a prediction of impact.
+        data_tests:
+          - not_null
+      - name: est_diameter_km_min
+        description: >
+          Lower bound of the estimated diameter, derived from absolute
+          magnitude and an assumed albedo range — hence a range, not a
+          measurement.
+        data_tests:
+          - not_null
+
+  - name: stg_nasa_neo_feed__close_approach_data
+    description: >
+      Typed 1:1 view over dlt's child table of neo_feed. Effectively 1:1 with
+      the parent, since a feed response filters the approach list to the
+      requested window.
+    columns:
+      - name: _dlt_parent_id
+        description: Joins to stg_nasa_neo_feed__neo_feed._dlt_id.
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('stg_nasa_neo_feed__neo_feed')
+                field: _dlt_id
+      - name: miss_distance_km
+        description: Closest approach distance in km, cast from a JSON string.
+        data_tests:
+          - not_null
+      - name: velocity_km_s
+        description: Speed relative to Earth at approach, cast from a JSON string.
+        data_tests:
+          - not_null
+      - name: orbiting_body
+        description: Body being approached. "Earth" for everything in this feed.
+        data_tests:
+          - not_null

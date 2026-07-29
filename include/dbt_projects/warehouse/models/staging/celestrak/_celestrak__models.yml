@@ -1,0 +1,70 @@
+version: 2
+
+# Tests belong here, on the MODEL, not only on the source in
+# _celestrak__sources.yml. Cosmos's default TestBehavior.AFTER_EACH renders a
+# test task after each *model*; a test attached to a source has no model to hang
+# off, so it parses but never runs in Airflow.
+#
+# The uniqueness tests are the real assertion behind the pipeline's merge key.
+# If the key were wrong, merge would silently accumulate duplicate element sets
+# instead of updating, the screening engine would propagate the same object
+# twice, and every duplicated object would appear to have a zero-distance
+# conjunction with itself. These tests are what catch that.
+
+models:
+  - name: stg_celestrak__gp
+    description: >
+      Public GP element sets from CelesTrak, one row per object per epoch.
+      Active payloads only — see the source description. Element-set history
+      accumulates here across runs by design.
+    columns:
+      - name: element_set_key
+        description: Surrogate key over (norad_cat_id, epoch), the true grain.
+        data_tests: [not_null, unique]
+      - name: norad_cat_id
+        description: NORAD catalogue number. Repeats across epochs by design.
+        data_tests: [not_null]
+      - name: epoch
+        description: Element set epoch, UTC.
+        data_tests: [not_null]
+      - name: mean_motion_rev_per_day
+        description: >
+          Revolutions per day. Non-null is a hard requirement: SGP4 cannot be
+          initialised without it, so a null here would fail the screening run
+          rather than merely degrade it.
+        data_tests: [not_null]
+      - name: eccentricity
+        description: Orbit eccentricity, dimensionless.
+        data_tests: [not_null]
+      - name: inclination_deg
+        description: Inclination in degrees.
+        data_tests: [not_null]
+      - name: bstar
+        description: >
+          SGP4 drag term. Nullable in principle; a wrong value here is the
+          usual cause of a wildly wrong propagation.
+
+  - name: stg_celestrak__sup_gp
+    description: >
+      Operator-supplied supplemental element sets (SpaceX, OneWeb). More
+      accurate than the public TLE for these constellations. Keyed on the
+      international designator because the supplemental feed's catalogue
+      number is a placeholder.
+    columns:
+      - name: element_set_key
+        description: Surrogate key over (international_designator, epoch).
+        data_tests: [not_null, unique]
+      - name: international_designator
+        description: >
+          e.g. 2026-160A. The trustworthy identifier in this table.
+        data_tests: [not_null]
+      - name: epoch
+        description: Element set epoch, UTC.
+        data_tests: [not_null]
+      - name: mean_motion_rev_per_day
+        data_tests: [not_null]
+      - name: norad_cat_id_placeholder
+        description: >
+          NOT a catalogue number — thousands of distinct satellites share the
+          value 100001. Deliberately untested for uniqueness, and deliberately
+          named so that joining it to a real catalogue looks wrong on sight.

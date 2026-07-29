@@ -1,0 +1,44 @@
+version: 2
+
+sources:
+  - name: nasa_neo_feed
+    schema: raw
+    description: >
+      Landing tables written by include/pipelines/nasa_neo_feed_pipeline.py.
+      Loaded with write_disposition "merge" on (id, close_approach_date) over a
+      trailing 7-day window, so history accumulates run over run rather than
+      being replaced.
+    tables:
+      - name: neo_feed
+        description: >
+          One row per asteroid per close-approach date. The same asteroid
+          reappears on other dates, which is why the key is composite.
+        columns:
+          - name: id
+            description: NASA JPL small-body id. Not unique on its own.
+          - name: close_approach_date
+            description: >
+              Hoisted out of close_approach_data by the pipeline so it can be
+              part of the merge key — see _hoist_close_approach_date.
+          - name: is_potentially_hazardous_asteroid
+            description: >
+              NASA's PHA flag: combines minimum orbit intersection distance
+              with absolute magnitude. Not a prediction of impact.
+          - name: sentry_data
+            description: >
+              Link to the Sentry impact-risk record. Present only for objects
+              Sentry tracks, so mostly NULL.
+
+      - name: neo_feed__close_approach_data
+        description: >
+          dlt child table of neo_feed, holding the approach geometry. In a feed
+          response the list is filtered to the requested window and holds
+          exactly one element per parent, so this is effectively 1:1 — but it
+          is modelled as a child because the API type is a list.
+        columns:
+          - name: _dlt_parent_id
+            description: Joins to neo_feed._dlt_id.
+          - name: miss_distance__kilometers
+            description: Closest approach distance in km.
+          - name: relative_velocity__kilometers_per_second
+            description: Speed relative to Earth at approach.

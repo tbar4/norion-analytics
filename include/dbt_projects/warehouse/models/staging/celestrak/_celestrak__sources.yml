@@ -1,0 +1,68 @@
+version: 2
+
+# CelesTrak GP element sets. One sources file per onboarded source, living
+# beside that source's staging models.
+#
+# `raw` is the dlt dataset_name — dlt creates the schema in the Postgres
+# `warehouse` database and dbt reads from it, so the `schema:` below must match
+# `dataset_name` in include/pipelines/celestrak_pipeline.py.
+#
+# Unlike the NASA sources, these tables arrive properly TYPED rather than
+# all-varchar: CelesTrak returns real JSON numbers, and the pipeline pins the
+# OMM float columns explicitly so dlt cannot fork a variant column. The staging
+# layer therefore renames and documents far more than it casts.
+
+sources:
+  - name: celestrak
+    schema: raw
+    description: >
+      Landing tables written by include/pipelines/celestrak_pipeline.py.
+      Loaded with write_disposition "merge" keyed on (object, epoch), so each
+      new element set is a new row and element-set HISTORY accumulates. That
+      history is not incidental — it is the only uncertainty signal available
+      to a TLE-based pipeline, and the conjunction screening engine derives its
+      pseudo-covariance from the scatter across it.
+    tables:
+      - name: gp
+        description: >
+          Public General Perturbations element sets, one row per object per
+          epoch. Sourced from GROUP=active, which is ACTIVE PAYLOADS ONLY
+          (~16.2k objects as of 2026-07-29) — it excludes debris, which is the
+          majority of tracked objects and the majority of collision risk. The
+          complete screening universe comes from space_track.gp instead.
+
+          If more than one GROUP is ever configured in the pipeline, an object
+          appearing in two groups is deduplicated by the merge key, and
+          celestrak_group then records whichever group last supplied the row
+          rather than being an exhaustive membership list. Dedupe is the
+          intended behaviour; the column is provenance, not a facet.
+        columns:
+          - name: norad_cat_id
+            description: NORAD catalogue number. Real and trustworthy in this table.
+          - name: epoch
+            description: Element set epoch, UTC. Part of the grain.
+          - name: celestrak_group
+            description: The CelesTrak GROUP that supplied this row.
+
+      - name: sup_gp
+        description: >
+          Supplemental element sets published by the OPERATORS (SpaceX,
+          OneWeb), not derived from public tracking. Materially more accurate
+          than the public TLE for the constellations that dominate the
+          catalogue by count.
+
+          Carries an extra RMS column that gp does not, which is why this is a
+          separate table rather than more rows in gp.
+        columns:
+          - name: object_id
+            description: >
+              International designator, e.g. 2026-160A. THE key for this table.
+          - name: norad_cat_id
+            description: >
+              PLACEHOLDER, not a real catalogue number. Starlink supplemental
+              rows return 100001 with classification_type "C" for objects that
+              are not yet catalogued, so thousands of distinct satellites share
+              one value. Staged as norad_cat_id_placeholder to make accidental
+              joins hard. Never join this to celestrak.gp or space_track.gp.
+          - name: epoch
+            description: Element set epoch, UTC. Part of the grain.

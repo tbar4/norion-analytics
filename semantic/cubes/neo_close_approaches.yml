@@ -1,0 +1,144 @@
+# Cube for analytics.neo_close_approaches — the dbt mart built by the
+# nasa_neo_feed DAG.
+#
+# Cubes are always defined over a dbt MART, never over a raw dlt table. Here
+# that matters more than usual: NeoWs returns every miss_distance and velocity
+# as a JSON *string*, so the raw columns are varchar. Pointing a cube at them
+# would give measures that sort lexically — "9" ranked above "74798253" — and
+# nothing in the semantic layer would test it. The casts live in staging.
+#
+# `sql_table` is schema-qualified because Cube connects to the `warehouse`
+# database with no search_path set — an unqualified name would resolve to
+# public and fail.
+
+cubes:
+  - name: neo_close_approaches
+    sql_table: analytics.neo_close_approaches
+    title: "Near Earth Object Close Approaches"
+    description: >
+      One row per asteroid per close approach to Earth, from NASA's NeoWs feed.
+      The pipeline merges a trailing 7-day window rather than replacing, so
+      this accumulates into a continuous record rather than holding only the
+      last week.
+
+    dimensions:
+      - name: approach_key
+        sql: approach_key
+        type: string
+        primary_key: true
+        # Shown in the UI even though it is the primary key: Cube hides primary
+        # keys by default.
+        public: true
+        title: "Approach Key"
+        description: >
+          "<asteroid_id>:<close_approach_date>". The grain — neither part is
+          unique alone.
+
+      - name: close_approach_date
+        sql: close_approach_date
+        type: time
+        title: "Approach Date"
+        description: Date of closest approach. The main time dimension.
+
+      - name: name
+        sql: name
+        type: string
+        title: "Asteroid"
+        description: NASA's designation, e.g. "(2015 BF)".
+
+      - name: asteroid_id
+        sql: asteroid_id
+        type: number
+        title: "Asteroid ID"
+        description: JPL small-body id. Repeats across approach dates.
+
+      - name: is_potentially_hazardous_asteroid
+        sql: is_potentially_hazardous_asteroid
+        type: boolean
+        title: "Potentially Hazardous"
+        description: >
+          NASA's PHA classification — minimum orbit intersection distance
+          combined with absolute magnitude. A property of the orbit, NOT a
+          prediction that anything will strike Earth.
+
+      - name: is_closer_than_moon
+        sql: is_closer_than_moon
+        type: boolean
+        title: "Inside Lunar Distance"
+        description: True when the approach was nearer than the Moon's orbit.
+
+      - name: is_sentry_object
+        sql: is_sentry_object
+        type: boolean
+        description: Tracked by JPL's Sentry impact-risk system.
+
+      - name: orbiting_body
+        sql: orbiting_body
+        type: string
+        description: Body approached. "Earth" throughout this feed.
+
+      - name: nasa_jpl_url
+        sql: nasa_jpl_url
+        type: string
+        title: "JPL Page"
+
+      # dlt's load lineage, carried through every dbt layer. Filtering on this
+      # is how you isolate the rows a single pipeline run produced.
+      - name: dlt_load_id
+        sql: _dlt_load_id
+        type: string
+        title: "dlt Load ID"
+
+    measures:
+      - name: count
+        type: count
+        title: "Approaches"
+        description: Number of close approaches.
+
+      - name: hazardous_count
+        type: count
+        title: "Potentially Hazardous"
+        filters:
+          - sql: "{CUBE}.is_potentially_hazardous_asteroid"
+
+      - name: inside_lunar_count
+        type: count
+        title: "Inside Lunar Distance"
+        filters:
+          - sql: "{CUBE}.is_closer_than_moon"
+
+      - name: distinct_asteroids
+        sql: asteroid_id
+        type: count_distinct
+        title: "Distinct Asteroids"
+        description: >
+          Lower than the approach count once history accumulates, since an
+          asteroid returns on later dates.
+
+      - name: min_miss_distance_lunar
+        sql: miss_distance_lunar
+        type: min
+        title: "Closest Approach (lunar distances)"
+        description: 1.0 is the Moon's orbit.
+
+      - name: avg_miss_distance_km
+        sql: miss_distance_km
+        type: avg
+        title: "Avg Miss Distance (km)"
+
+      - name: max_velocity_km_s
+        sql: velocity_km_s
+        type: max
+        title: "Fastest Approach (km/s)"
+
+      - name: max_diameter_m
+        sql: est_diameter_m_mid
+        type: max
+        title: "Largest Estimated Diameter (m)"
+        description: >
+          Midpoint of NASA's estimated range, which derives from an assumed
+          albedo. A ranking aid, not a measurement.
+
+    # No pre_aggregations, for the same reason as apod_daily: the grain is a
+    # few dozen rows per week, so a rollup would be ceremony rather than
+    # caching. space_weather_events carries the worked rollup example.

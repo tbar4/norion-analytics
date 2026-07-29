@@ -75,3 +75,63 @@ models:
         description: >
           Observing vantage point for interplanetary shocks (Earth, STEREO A).
           NULL for every other event type. Not a location on the Sun.
+
+  - name: neo_close_approaches
+    description: >
+      One row per asteroid close approach to Earth, from the NASA NeoWs feed.
+      History accumulates run over run: the pipeline merges a trailing 7-day
+      window rather than replacing, so this grows into a continuous record
+      instead of holding only the last week. The model behind Cube's
+      `neo_close_approaches` cube.
+    columns:
+      - name: approach_key
+        description: >
+          Surrogate key, "<asteroid_id>:<close_approach_date>", and the
+          declared grain of this table. Neither component is unique alone — an
+          asteroid returns on other dates, and many asteroids share a date.
+          This is the test that would catch the pipeline's merge key regressing
+          to `id` alone and silently collapsing history.
+        data_tests:
+          - not_null
+          - unique
+      - name: asteroid_id
+        description: NASA JPL small-body id. Not unique on its own.
+        data_tests:
+          - not_null
+      - name: close_approach_date
+        description: Date of the approach. Half of the grain.
+        data_tests:
+          - not_null
+      - name: miss_distance_km
+        description: >
+          Closest approach distance. Cast from a JSON string upstream — NeoWs
+          returns these as text, and uncast they sort lexically.
+        data_tests:
+          - not_null
+      - name: miss_distance_lunar
+        description: >
+          Same distance in lunar distances, where 1.0 is the Moon's orbit. The
+          intuitive scale for how near a near miss was.
+        data_tests:
+          - not_null
+      - name: is_potentially_hazardous_asteroid
+        description: >
+          NASA's PHA flag — minimum orbit intersection distance combined with
+          absolute magnitude. A classification of the orbit, NOT a prediction
+          that anything will hit Earth.
+        data_tests:
+          - not_null
+      - name: is_closer_than_moon
+        description: True when miss_distance_lunar < 1.0.
+        data_tests:
+          - not_null
+      - name: est_diameter_m_mid
+        description: >
+          Midpoint of NASA's estimated diameter range. The range derives from
+          an assumed albedo, so treat this as a ranking aid, not a measurement.
+        data_tests:
+          - not_null
+      - name: orbiting_body
+        description: Body approached. "Earth" throughout this feed.
+        data_tests:
+          - not_null
