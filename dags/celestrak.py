@@ -11,7 +11,7 @@ that and still gives the screening engine fresh elements.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow.sdk import dag, task
@@ -67,7 +67,11 @@ render_config = RenderConfig(
     doc_md=__doc__,
 )
 def celestrak():
-    @task
+    # Retry at the orchestrator layer. dlt retries 429s and 5xx inside a single
+    # request, which is not enough when a public endpoint is down for minutes
+    # rather than seconds — nasa_apod exhausted dlt's attempts after 2m52s and
+    # still failed. See the decision note referenced in the recipe.
+    @task(retries=3, retry_delay=timedelta(minutes=10))
     def load() -> str:
         # Imported inside the task so a broken pipeline module cannot stop the
         # whole DAG file from parsing.

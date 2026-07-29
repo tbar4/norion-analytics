@@ -15,7 +15,7 @@ not narrowed to match the schedule.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow.sdk import dag, task
@@ -72,7 +72,11 @@ render_config = RenderConfig(
     doc_md=__doc__,
 )
 def nasa_neo_feed():
-    @task
+    # Retry at the orchestrator layer. api.nasa.gov returns intermittent 500s,
+    # and dlt's in-request retry is not enough: nasa_apod exhausted its attempts
+    # after 2m52s on 2026-07-29 and still failed, because the outage lasted
+    # minutes. dlt handles blips; Airflow handles "the upstream was down".
+    @task(retries=3, retry_delay=timedelta(minutes=10))
     def load() -> str:
         # Imported inside the task so a broken pipeline module cannot stop the
         # whole DAG file from parsing.
