@@ -1,0 +1,55 @@
+version: 2
+
+# Conjunction screening output. Unlike every other source in this project, the
+# raw tables here are COMPUTED rather than fetched: they are written by
+# include/pipelines/conjunction_screening_pipeline.py, which reads the staged
+# catalogue, propagates it with SGP4, and writes what it found back into `raw`.
+#
+# It is still modelled as a dlt source with a `raw` landing zone because the
+# rest of the platform's contract (dataset, state directory, dbt tag, one DAG
+# per source) applies unchanged. Only the origin of the rows differs.
+
+sources:
+  - name: conjunction
+    schema: raw
+    description: >
+      Close-approach screening results. Written by the conjunction_screening
+      pipeline, one load per screening run.
+    tables:
+      - name: screening_run
+        description: >
+          One row per screening run, recording the parameters used and the
+          coverage achieved. This table is what makes a partial screen
+          detectable: objects_screened, candidate_cap_hit and catalogue_sources
+          together say whether a run can be trusted as complete.
+        columns:
+          - name: screening_run_id
+            description: UTC timestamp of the run start, e.g. 20260729T062401Z.
+          - name: candidate_cap_hit
+            description: >
+              True when the coarse pass stopped early on the safety cap. A run
+              with this set did NOT examine the whole window and will
+              under-report.
+          - name: catalogue_sources
+            description: >
+              Which catalogues fed the screen. "celestrak" alone means active
+              payloads only — no debris — and the screen is incomplete.
+
+      - name: conjunction_event
+        description: >
+          One row per close approach found, per run. A pair legitimately
+          reappears across runs with a refined TCA as fresh element sets
+          arrive, so the run id is part of the grain.
+        columns:
+          - name: miss_distance_km
+            description: Refined closest-approach distance, TEME.
+          - name: estimated_collision_probability
+            description: >
+              ESTIMATED Pc, from synthetic covariance. Not an authoritative
+              number — see the pipeline module docstring. Named `estimated_`
+              throughout so it cannot be mistaken for a CDM Pc.
+          - name: covariance_source
+            description: >
+              "tle_history" when both objects had enough element-set history to
+              measure scatter, "fallback" when the documented default sigmas
+              were used instead.

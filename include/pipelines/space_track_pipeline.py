@@ -177,8 +177,17 @@ def space_track_source(
     """
     session = _login(identity, password)
 
+    # TABLE NAMES ARE PREFIXED, unlike every other source here.
+    #
+    # All pipelines share one dlt dataset (`raw`), so table names must be unique
+    # across sources. celestrak_pipeline already owns the unqualified `gp` and
+    # `sup_gp`, and "gp" is far too generic a name for a shared namespace — two
+    # sources both calling their table `gp` would silently merge incompatible
+    # schemas into one table. Prefixing here is the cheaper fix: celestrak's
+    # tables already hold data, and renaming them would require a reload that
+    # CelesTrak's 2-hour refusal window can block at an arbitrary moment.
     @dlt.resource(
-        name="gp",
+        name="space_track_gp",
         write_disposition="merge",
         # (object, epoch) rather than object alone, so element-set history
         # accumulates for the pseudo-covariance estimate. Same rationale as
@@ -191,7 +200,7 @@ def space_track_source(
         yield from rows
 
     @dlt.resource(
-        name="cdm_public",
+        name="space_track_cdm_public",
         write_disposition="merge",
         primary_key="CDM_ID",
     )

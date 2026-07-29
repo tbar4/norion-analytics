@@ -1,0 +1,58 @@
+version: 2
+
+# Space-Track — the authoritative public catalogue, and the only source here
+# that covers DEBRIS. CelesTrak's GROUP=active is active payloads only, so
+# without this source the conjunction screen runs against roughly 16k objects
+# instead of 28k+ and knowingly under-reports.
+#
+# UNVERIFIED AS OF 2026-07-29. These declarations were written from
+# Space-Track's documented `gp` class schema, but the pipeline has never been
+# executed — it needs the SPACE_TRACK_USER and SPACE_TRACK_PASSWORD Airflow
+# Variables, which had not been set. Column names are expected to be correct
+# and stable, but treat the first run as the real verification.
+#
+# Table names are PREFIXED here (space_track_gp, not gp) because all pipelines
+# share one `raw` dataset and celestrak_pipeline already owns the unqualified
+# `gp`. See the pipeline module for the full reasoning.
+
+sources:
+  - name: space_track
+    schema: raw
+    description: >
+      Landing tables written by include/pipelines/space_track_pipeline.py.
+      Loaded with write_disposition "merge" keyed on (object, epoch), so
+      element-set history accumulates the same way CelesTrak's does.
+
+      Note that Space-Track returns every JSON value as a STRING, including
+      numerics — unlike CelesTrak, which returns real JSON numbers. The staging
+      layer therefore does real casting rather than mostly renaming.
+    tables:
+      - name: space_track_gp
+        description: >
+          Full on-orbit catalogue: every object that has not decayed, with an
+          element set from the last 30 days. Includes debris, which is the
+          majority of tracked objects and the majority of collision risk.
+        columns:
+          - name: norad_cat_id
+            description: NORAD catalogue number.
+          - name: epoch
+            description: Element set epoch, UTC. Part of the grain.
+          - name: object_type
+            description: PAYLOAD, ROCKET BODY, DEBRIS, or UNKNOWN.
+
+      - name: space_track_cdm_public
+        description: >
+          Conjunction Data Messages — the authoritative product, carrying a
+          REAL covariance and a real probability of collision.
+
+          DELIBERATELY NOT STAGED. Space-Track serves CDMs through advanced
+          services requiring an SSA Sharing Agreement or an Orbital Data
+          Request, so a registered non-operator account most likely cannot see
+          them at all. The pipeline attempts the query and degrades to zero rows
+          on refusal, which means this table may never be created — and a
+          staging model over a table that does not exist would fail the DAG on
+          every run.
+
+          Add a stg_space_track__cdm_public model once a run has actually
+          landed rows here. That is also the point at which the estimated Pc in
+          the conjunction mart can finally be reconciled against a real one.

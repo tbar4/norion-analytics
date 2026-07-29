@@ -45,6 +45,15 @@ models:
       celestrak:
         +tags: ["celestrak"]
 
+      space_track:
+        +tags: ["space_track"]
+
+      # Computed rather than fetched — written by the conjunction screening
+      # engine, which reads the staged catalogue rather than an API. Same
+      # contract as any other source otherwise.
+      conjunction:
+        +tags: ["conjunction"]
+
     # Marts are business-facing and are what Cube and Metabase read. Tables
     # rather than views, so a dashboard load reads precomputed results instead
     # of re-running the SQL. Untagged on purpose: marts are reached through the

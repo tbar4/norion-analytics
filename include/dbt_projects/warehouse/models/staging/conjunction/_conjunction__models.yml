@@ -1,0 +1,54 @@
+version: 2
+
+# Tests belong here, on the MODEL, not only on the source. Cosmos's default
+# TestBehavior.AFTER_EACH renders a test task after each *model*; a test
+# attached to a source has no model to hang off, so it parses but never runs.
+
+models:
+  - name: stg_conjunction__run
+    description: >
+      One row per screening run, with the parameters used and the coverage
+      achieved.
+    columns:
+      - name: screening_run_id
+        description: UTC timestamp of the run start.
+        data_tests: [not_null, unique]
+      - name: objects_screened
+        description: >
+          How many objects the run actually propagated. Non-null because a run
+          that screened nothing is a failure, not an empty result.
+        data_tests: [not_null]
+      - name: is_complete_screen
+        description: >
+          True only when the run examined the whole window and had debris
+          coverage. Expect False until the space_track source is loaded.
+
+  - name: stg_conjunction__event
+    description: >
+      One row per close approach per run. Pairs recur across runs as element
+      sets are refreshed.
+    columns:
+      - name: conjunction_key
+        description: >
+          Surrogate key over (run, primary, secondary) — the true grain. This
+          project has no dbt_utils, so a surrogate key is the only way to
+          assert a compound grain with the built-in unique test.
+        data_tests: [not_null, unique]
+      - name: screening_run_id
+        data_tests: [not_null]
+      - name: primary_norad_cat_id
+        data_tests: [not_null]
+      - name: secondary_norad_cat_id
+        data_tests: [not_null]
+      - name: tca
+        description: Time of closest approach, UTC.
+        data_tests: [not_null]
+      - name: miss_distance_km
+        description: Refined closest-approach distance.
+        data_tests: [not_null]
+      - name: covariance_source
+        description: >
+          Which covariance fed the Pc estimate.
+        data_tests:
+          - accepted_values:
+              values: ["tle_history", "fallback"]

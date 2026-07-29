@@ -1,0 +1,37 @@
+version: 2
+
+# Tests belong here, on the MODEL, not only on the source — a test attached to
+# a source parses but never runs under Cosmos.
+#
+# UNVERIFIED: these models have never been built, because the pipeline has never
+# run. Expect the first execution to be the real test of the column names.
+
+models:
+  - name: stg_space_track__gp
+    description: >
+      Full on-orbit catalogue including debris, one row per object per epoch.
+      Unioned with stg_celestrak__gp by the conjunction screening engine, which
+      prefers this source where both cover the same object.
+    columns:
+      - name: element_set_key
+        description: Surrogate key over (norad_cat_id, epoch), the true grain.
+        data_tests: [not_null, unique]
+      - name: norad_cat_id
+        description: NORAD catalogue number. Repeats across epochs by design.
+        data_tests: [not_null]
+      - name: epoch
+        description: Element set epoch, UTC.
+        data_tests: [not_null]
+      - name: mean_motion_rev_per_day
+        description: >
+          Revolutions per day. SGP4 cannot initialise without it, so a null
+          fails the screening run rather than merely degrading it.
+        data_tests: [not_null]
+      - name: eccentricity
+        data_tests: [not_null]
+      - name: inclination_deg
+        data_tests: [not_null]
+      - name: object_type
+        description: >
+          What distinguishes debris from payloads — the whole reason this
+          source exists alongside CelesTrak.

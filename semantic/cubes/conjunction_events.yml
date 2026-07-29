@@ -1,0 +1,186 @@
+# Cube for analytics.conjunction_events — the dbt mart built by the
+# conjunction_screening DAG.
+#
+# Cubes are always defined over a dbt MART, never over a raw dlt table. The raw
+# layer is all-varchar and its shape follows whatever the pipeline produced, so
+# pointing a cube at it puts casting logic in the semantic layer where nothing
+# tests it.
+#
+# `sql_table` is schema-qualified because Cube connects to the `warehouse`
+# database with no search_path set — an unqualified name would resolve to
+# public and fail.
+#
+# READ THIS BEFORE BUILDING A DASHBOARD ON IT. The probability measures here are
+# ESTIMATED from synthetic covariance derived from TLE scatter, because TLEs
+# carry no covariance of their own. They rank what deserves attention; they are
+# not a substitute for a CDM and must not drive a manoeuvre decision. Every such
+# field keeps an `estimated` in its name and title so a chart legend cannot
+# quietly launder it into something authoritative.
+
+cubes:
+  - name: conjunction_events
+    sql_table: analytics.conjunction_events
+    title: "Conjunction Events (SGP4 Screening)"
+    description: >
+      Close approaches found by all-on-all SGP4 screening of the catalogue.
+      One row per object pair per screening run. Miss distance and time of
+      closest approach are computed; collision probability is ESTIMATED from
+      TLE-derived uncertainty and is for triage only.
+
+    dimensions:
+      - name: conjunction_key
+        sql: conjunction_key
+        type: string
+        primary_key: true
+        # Shown in the UI even though it is the primary key. Cube hides primary
+        # keys by default, which would make row-level drilldown impossible.
+        public: true
+        title: "Conjunction Key"
+        description: Surrogate key over (run, primary object, secondary object).
+
+      - name: tca
+        sql: tca
+        type: time
+        title: "Time of Closest Approach"
+        description: When the two objects are nearest, UTC. The main time axis.
+
+      - name: run_started_at
+        sql: run_started_at
+        type: time
+        title: "Screening Run Time"
+        description: When the screen that found this event was executed.
+
+      - name: screening_run_id
+        sql: screening_run_id
+        type: string
+        title: "Screening Run"
+
+      - name: primary_object_name
+        sql: primary_object_name
+        type: string
+        title: "Primary Object"
+        description: >
+          Lower catalogue number of the pair. An ordering convention only — it
+          says nothing about which object is at risk or which would manoeuvre.
+
+      - name: secondary_object_name
+        sql: secondary_object_name
+        type: string
+        title: "Secondary Object"
+
+      - name: primary_norad_cat_id
+        sql: primary_norad_cat_id
+        type: number
+        title: "Primary NORAD ID"
+
+      - name: secondary_norad_cat_id
+        sql: secondary_norad_cat_id
+        type: number
+        title: "Secondary NORAD ID"
+
+      - name: risk_band
+        sql: risk_band
+        type: string
+        title: "Estimated Risk Band"
+        description: >
+          estimated_high (Pc >= 1e-4), estimated_elevated (>= 1e-5),
+          estimated_low (>= 1e-6), estimated_negligible. Banded from the
+          ESTIMATED probability, so the bands inherit its caveat.
+
+      - name: covariance_source
+        sql: covariance_source
+        type: string
+        title: "Covariance Source"
+        description: >
+          "tle_history" when both objects had enough element-set history to
+          measure scatter, "fallback" when default sigmas were used. Expect
+          "fallback" everywhere until several days of history accumulate.
+
+      - name: is_intra_constellation
+        sql: is_intra_constellation
+        type: boolean
+        title: "Intra-Constellation"
+        description: >
+          Both objects share a name prefix, i.e. the same constellation. These
+          dominate the raw count once a large constellation is catalogued and
+          their operator manoeuvres them automatically — CelesTrak's SOCRATES
+          stopped screening them for this reason. Filter them out for almost
+          any real analysis.
+
+      - name: is_latest_run
+        sql: is_latest_run
+        type: boolean
+        title: "Latest Run"
+        description: >
+          True for events from the most recent screen. Filter on this for a
+          current picture; leave it off to look at history.
+
+      - name: run_is_complete_screen
+        sql: run_is_complete_screen
+        type: boolean
+        title: "Complete Screen"
+        description: >
+          True only when the run examined its whole window AND had debris
+          coverage from Space-Track. False means the screen under-reports —
+          worth surfacing on any dashboard built from this.
+
+      - name: miss_distance_km
+        sql: miss_distance_km
+        type: number
+        title: "Miss Distance (km)"
+
+      - name: relative_speed_km_s
+        sql: relative_speed_km_s
+        type: number
+        title: "Relative Speed (km/s)"
+
+    measures:
+      - name: count
+        type: count
+        title: "Conjunctions"
+
+      - name: real_conjunction_count
+        type: count
+        title: "Conjunctions (excl. intra-constellation)"
+        description: >
+          The number that usually matters — intra-constellation pairs removed.
+        filters:
+          - sql: "NOT {CUBE}.is_intra_constellation"
+
+      - name: elevated_or_high_count
+        type: count
+        title: "Estimated Elevated or High"
+        description: >
+          Events with estimated Pc >= 1e-5, excluding intra-constellation
+          pairs. A triage queue, not a manoeuvre list.
+        filters:
+          - sql: "{CUBE}.risk_band IN ('estimated_high', 'estimated_elevated')"
+          - sql: "NOT {CUBE}.is_intra_constellation"
+
+      - name: min_miss_distance_km
+        sql: miss_distance_km
+        type: min
+        title: "Closest Approach (km)"
+
+      - name: avg_miss_distance_km
+        sql: miss_distance_km
+        type: avg
+        title: "Average Miss Distance (km)"
+
+      - name: max_estimated_collision_probability
+        sql: estimated_collision_probability
+        type: max
+        title: "Max Estimated Pc"
+        description: >
+          Highest ESTIMATED collision probability in the selection. Synthetic
+          covariance — triage only.
+
+      - name: max_relative_speed_km_s
+        sql: relative_speed_km_s
+        type: max
+        title: "Max Relative Speed (km/s)"
+
+      - name: distinct_objects_primary
+        sql: primary_norad_cat_id
+        type: countDistinct
+        title: "Distinct Primary Objects"

@@ -135,3 +135,62 @@ models:
         description: Body approached. "Earth" throughout this feed.
         data_tests:
           - not_null
+
+  - name: conjunction_events
+    description: >
+      Close approaches found by all-on-all SGP4 screening of the catalogue, one
+      row per object pair per screening run. The model Cube's
+      `conjunction_events` cube is built on.
+
+      Miss distance, TCA and relative speed are COMPUTED. Collision probability
+      is ESTIMATED from synthetic covariance derived from TLE scatter, because
+      TLEs carry no covariance of their own — it ranks what deserves attention
+      and is not a substitute for a CDM. The `estimated_` prefixes are load
+      bearing; do not strip them downstream.
+    columns:
+      - name: conjunction_key
+        description: >
+          Surrogate key over (run, primary object, secondary object) — the
+          grain. A pair recurs across runs as element sets are refreshed.
+        data_tests:
+          - not_null
+          - unique
+      - name: tca
+        description: Time of closest approach, UTC.
+        data_tests:
+          - not_null
+      - name: miss_distance_km
+        description: Refined closest-approach distance in TEME.
+        data_tests:
+          - not_null
+      - name: relative_speed_km_s
+        description: Relative speed at TCA. Drives how short the encounter is.
+        data_tests:
+          - not_null
+      - name: risk_band
+        description: >
+          Triage band derived from the ESTIMATED probability. Every value is
+          prefixed "estimated" so the caveat travels with the label.
+        data_tests:
+          - not_null
+          - accepted_values:
+              values:
+                - estimated_high
+                - estimated_elevated
+                - estimated_low
+                - estimated_negligible
+      - name: is_intra_constellation
+        description: >
+          Both objects share a name prefix. These dominate the count once a
+          large constellation is catalogued — 55,120 of 55,184 rows on the
+          first real run — and their operator manoeuvres them automatically.
+          Flagged rather than filtered so the exclusion stays the reader's
+          choice.
+        data_tests:
+          - not_null
+      - name: run_is_complete_screen
+        description: >
+          True only when the run examined its whole window AND had debris
+          coverage from Space-Track. False means the screen under-reports.
+        data_tests:
+          - not_null
