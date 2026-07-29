@@ -242,6 +242,24 @@ Cubes are defined over dbt **marts**, never raw tables.
    Do NOT add one to a small mart. `apod_daily` has 365 rows and deliberately
    has none — a rollup there is ceremony, not caching.
 
+   **Key the `refresh_key` on the LOAD, not on an event timestamp.** This one
+   fails silently and cost a real incident:
+
+   ```yaml
+   refresh_key:
+     every: 1 hour
+     sql: >
+       SELECT MAX(_dlt_load_id::numeric)::text || ':' || COUNT(*)::text
+       FROM analytics.<mart>
+   ```
+
+   A key like `MAX(submission_time)` looks better and is wrong. A backfill loads
+   *old* rows whose business timestamp is also old, so the maximum never moves,
+   so the rollup never invalidates — Cube serves pre-backfill numbers forever
+   with no error. `_dlt_load_id` increases on every load regardless of the age
+   of the data; `COUNT(*)` catches deletions; the `::numeric` cast avoids
+   lexicographic comparison of a text column.
+
    Verify it is actually USED, never assume. `/v1/sql` returns the query plan,
    and the pre-aggregation table name must appear in the FROM clause:
 
