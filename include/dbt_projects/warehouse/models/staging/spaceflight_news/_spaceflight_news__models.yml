@@ -1,0 +1,64 @@
+version: 2
+
+# Tests belong here, on the MODEL, not only on the source in
+# _spaceflight_news__sources.yml. Cosmos's default TestBehavior.AFTER_EACH
+# renders a test task after each *model*; a test attached to a source has no
+# model to hang off, so it parses but never runs in Airflow.
+#
+# The `unique` test on each id is the real assertion behind the pipeline's
+# merge write_disposition AND behind its windowed backfill. If the date-window
+# walk ever double-visited a row, or if the merge key were wrong, duplicates
+# would accumulate silently — this is what catches it.
+
+models:
+  - name: stg_spaceflight_news__articles
+    description: >
+      News articles from ~42 outlets, one row per article. The full archive.
+    columns:
+      - name: article_id
+        description: SNAPI's integer key, stable across revisions.
+        data_tests: [not_null, unique]
+      - name: published_at
+        description: >
+          Outlet publication time. 59 rows carry a 1970-01-01 epoch default
+          from upstream, so this is NOT tested for plausibility — only for
+          presence. The mart exposes a flag for the bad ones.
+        data_tests: [not_null]
+      - name: updated_at
+        description: The incremental cursor field. Always populated.
+        data_tests: [not_null]
+      - name: news_site
+        data_tests: [not_null]
+
+  - name: stg_spaceflight_news__blogs
+    description: Blog posts, one row per post.
+    columns:
+      - name: blog_id
+        data_tests: [not_null, unique]
+      - name: published_at
+        data_tests: [not_null]
+      - name: news_site
+        data_tests: [not_null]
+
+  - name: stg_spaceflight_news__reports
+    description: Status reports, one row per report. No `featured` column.
+    columns:
+      - name: report_id
+        data_tests: [not_null, unique]
+      - name: published_at
+        data_tests: [not_null]
+      - name: news_site
+        data_tests: [not_null]
+
+  - name: stg_spaceflight_news__article_launches
+    description: >
+      Article-to-launch cross-reference from SNAPI's nested `launches` array.
+      Grain is (article, launch), so neither column is unique on its own.
+    columns:
+      - name: article_dlt_id
+        description: dlt parent link to stg_spaceflight_news__articles._dlt_id.
+        data_tests: [not_null]
+      - name: launch_id
+        description: LL2 launch UUID. Repeats by design — a launch gets covered
+          by many articles.
+        data_tests: [not_null]

@@ -1,0 +1,236 @@
+# Cube for analytics.spaceflight_news_items — the dbt mart built by the
+# spaceflight_news DAG.
+#
+# Defined over the MART, not the three raw SNAPI tables. The union, the
+# surrogate key, the launch-link aggregation and the placeholder-date flag all
+# live in dbt where they are tested; this file only names measures and
+# dimensions over the result.
+#
+# `sql_table` is schema-qualified because Cube connects to the `warehouse`
+# database with no search_path set — an unqualified name would resolve to
+# public and fail.
+
+cubes:
+  - name: spaceflight_news_items
+    sql_table: analytics.spaceflight_news_items
+    title: "Spaceflight News"
+    description: >
+      Every item published through the Spaceflight News API on one timeline —
+      news articles, blog posts and status reports from ~42 outlets. The full
+      archive, not a recent window.
+
+    dimensions:
+      - name: item_key
+        sql: item_key
+        type: string
+        primary_key: true
+        # Cube hides primary keys by default. This one is a surrogate
+        # ("article:39290") and is not interesting to browse, so it stays
+        # hidden — unlike apod_daily, where the key is also the time dimension.
+        public: false
+
+      - name: item_type
+        sql: item_type
+        type: string
+        title: "Item Type"
+        description: 'article, blog or report.'
+
+      - name: item_id
+        sql: item_id
+        type: number
+        description: >
+          SNAPI's id WITHIN its collection. NOT unique across types — article
+          1662 and report 1662 are unrelated records. Group by item_type too if
+          you are counting distinct items.
+
+      - name: title
+        sql: title
+        type: string
+
+      - name: news_site
+        sql: news_site
+        type: string
+        title: "Outlet"
+        description: Publishing outlet, e.g. "SpaceNews", "NASASpaceflight".
+
+      - name: item_url
+        sql: item_url
+        type: string
+        title: "URL"
+
+      - name: published_at
+        sql: published_at
+        type: time
+        title: "Published At"
+        description: >
+          Outlet publication time. Beware the 59 rows carrying a 1970-01-01
+          placeholder — filter on has_placeholder_published_at to exclude them
+          from a time series.
+
+      - name: published_date
+        sql: published_date
+        type: time
+        title: "Published Date"
+        description: Publication time truncated to a day, for daily rollups.
+
+      - name: updated_at
+        sql: updated_at
+        type: time
+        title: "Updated At"
+        description: >
+          When SNAPI last revised the record. This is the pipeline's
+          incremental cursor field, so it also tracks when a row was last seen.
+
+      - name: featured
+        sql: featured
+        type: boolean
+        description: >
+          Editorially featured. NULL for reports, where SNAPI does not return
+          the field at all — that is "not applicable", not "not featured".
+
+      - name: has_placeholder_published_at
+        sql: has_placeholder_published_at
+        type: boolean
+        title: "Placeholder Date"
+        description: >
+          True where published_at is an upstream 1970-01-01 epoch default
+          rather than a real date. 59 rows as of 2026-08-02.
+
+      - name: linked_launch_count
+        sql: linked_launch_count
+        type: number
+        title: "Linked Launches"
+        description: >
+          Launch Library 2 launches this item cross-references. Always 0 for
+          blogs and reports — SNAPI carries the link for articles only.
+
+      # dlt's load lineage, carried through every dbt layer. Filtering on this
+      # isolates the rows a single pipeline run produced.
+      - name: dlt_load_id
+        sql: _dlt_load_id
+        type: string
+        title: "dlt Load ID"
+
+    measures:
+      - name: count
+        type: count
+        title: "Items"
+
+      - name: article_count
+        type: count
+        title: "Articles"
+        filters:
+          - sql: "{CUBE}.item_type = 'article'"
+
+      - name: blog_count
+        type: count
+        title: "Blog Posts"
+        filters:
+          - sql: "{CUBE}.item_type = 'blog'"
+
+      - name: report_count
+        type: count
+        title: "Reports"
+        filters:
+          - sql: "{CUBE}.item_type = 'report'"
+
+      - name: featured_count
+        type: count
+        title: "Featured Items"
+        filters:
+          - sql: "{CUBE}.featured"
+
+      - name: launch_linked_count
+        type: count
+        title: "Items Linked To A Launch"
+        description: Items cross-referencing at least one LL2 launch.
+        filters:
+          - sql: "{CUBE}.linked_launch_count > 0"
+
+      - name: total_launch_links
+        sql: linked_launch_count
+        type: sum
+        title: "Total Launch Links"
+        description: >
+          Sum of cross-references. Exceeds launch_linked_count because one
+          article can cover several launches.
+
+      - name: outlet_count
+        sql: news_site
+        type: count_distinct
+        title: "Distinct Outlets"
+
+      - name: first_published_at
+        sql: published_at
+        type: min
+        title: "Earliest Published"
+
+      - name: last_published_at
+        sql: published_at
+        type: max
+        title: "Latest Published"
+
+    pre_aggregations:
+      # Daily item counts by type and outlet — the shape almost every question
+      # about this cube takes.
+      #
+      # Built into Cube Store by the refresh worker, so a matching query never
+      # touches Postgres. Verify a query actually HIT it rather than assuming:
+      # /v1/sql returns the plan, and the pre-aggregation table name must
+      # appear in its FROM clause. `usedPreAggregations` on /v1/load can come
+      # back null on a cache hit even when the rollup is working, so the plan
+      # is the reliable check.
+      #
+      # Only ADDITIVE measures are listed. count and the filtered counts sum
+      # across rows, so one rollup at day granularity also answers monthly and
+      # yearly questions. Deliberately omitted:
+      #
+      #   outlet_count      exact count_distinct — non-additive, cannot be
+      #                     re-aggregated, so including it would pin this
+      #                     rollup to exactly these dimensions
+      #   first/last_published_at  min/max ARE additive but are metadata
+      #                     rather than something anyone charts
+      #
+      # Queries using the omitted measures still work; they read Postgres.
+      - name: items_by_type_outlet_daily
+        measures:
+          - CUBE.count
+          - CUBE.article_count
+          - CUBE.blog_count
+          - CUBE.report_count
+          - CUBE.featured_count
+          - CUBE.launch_linked_count
+          - CUBE.total_launch_links
+        dimensions:
+          - CUBE.item_type
+          - CUBE.news_site
+          - CUBE.has_placeholder_published_at
+        time_dimension: CUBE.published_at
+        granularity: day
+        # No partition_granularity. The mart is ~39,000 rows and the rollup is
+        # bounded by (days x 3 types x ~42 outlets) with most combinations
+        # absent. Partitioning buys nothing at this size and adds a build_range
+        # to maintain. Add it if this ever reaches millions of rows.
+        refresh_key:
+          # Checked hourly, rebuilt only when the warehouse actually changed.
+          #
+          # Keyed on dlt's LOAD id, not on published_at or updated_at. Keying
+          # on a business timestamp fails silently here for exactly the reason
+          # it failed on space_weather_events: a backfill loads OLD rows whose
+          # timestamps are also old, so the maximum never moves, so the rollup
+          # never invalidates and Cube serves pre-backfill numbers forever with
+          # nothing erroring.
+          #
+          # This source makes that trap especially easy to fall into — 59 rows
+          # carry a 1970 published_at, and the first run backfills 16 years of
+          # archive in one load.
+          #
+          # _dlt_load_id increases on EVERY load regardless of how old the
+          # loaded data is, which is the property actually needed. count(*)
+          # catches deletions. The ::numeric cast avoids comparing a text
+          # column lexicographically.
+          every: 1 hour
+          sql: >
+            SELECT MAX(_dlt_load_id::numeric)::text || ':' || COUNT(*)::text
+            FROM analytics.spaceflight_news_items
+        scheduled_refresh: true

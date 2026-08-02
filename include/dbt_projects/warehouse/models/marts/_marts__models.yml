@@ -174,11 +174,12 @@ models:
         data_tests:
           - not_null
           - accepted_values:
-              values:
-                - estimated_high
-                - estimated_elevated
-                - estimated_low
-                - estimated_negligible
+              arguments:
+                values:
+                  - estimated_high
+                  - estimated_elevated
+                  - estimated_low
+                  - estimated_negligible
       - name: is_intra_constellation
         description: >
           Both objects share a name prefix. These dominate the count once a
@@ -267,5 +268,49 @@ models:
         description: >
           True when no Airflow run brackets the load — a backfill or smoke test
           run by hand. Signal, not a defect.
+        data_tests:
+          - not_null
+
+  - name: spaceflight_news_items
+    description: >
+      One timeline of every Spaceflight News API item — articles, blogs and
+      reports unioned. Behind Cube's `spaceflight_news_items` cube.
+    columns:
+      - name: item_key
+        description: >
+          Surrogate key over the declared grain, "<item_type>:<item_id>".
+          Needed because SNAPI numbers each collection in its own sequence, so
+          item_id alone collides across types.
+        data_tests:
+          - not_null
+          - unique
+      - name: item_type
+        description: One of article, blog, report.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["article", "blog", "report"]
+      - name: item_id
+        description: SNAPI's id WITHIN its collection. Not unique across types.
+        data_tests:
+          - not_null
+      - name: published_at
+        data_tests:
+          - not_null
+      - name: news_site
+        data_tests:
+          - not_null
+      - name: has_placeholder_published_at
+        description: >
+          True for the 59 upstream rows carrying a 1970-01-01 epoch default
+          instead of a real publication date. Exclude these from time series
+          rather than trusting the date.
+        data_tests:
+          - not_null
+      - name: linked_launch_count
+        description: >
+          Launch Library 2 launches this item cross-references. Always 0 for
+          blogs and reports — SNAPI only carries the link for articles.
         data_tests:
           - not_null

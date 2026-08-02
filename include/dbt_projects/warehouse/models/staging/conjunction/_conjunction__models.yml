@@ -51,4 +51,5 @@ models:
           Which covariance fed the Pc estimate.
         data_tests:
           - accepted_values:
-              values: ["tle_history", "fallback"]
+              arguments:
+                values: ["tle_history", "fallback"]

@@ -1,0 +1,67 @@
+version: 2
+
+# Spaceflight News API. One sources file per onboarded source, living beside
+# that source's staging models.
+#
+# `raw` is the dlt dataset_name — dlt creates the schema in the Postgres
+# `warehouse` database and dbt reads from it, so the `schema:` below must match
+# `dataset_name` in include/pipelines/spaceflight_news_pipeline.py.
+#
+# Table names carry a `snapi_` prefix because every pipeline here shares the one
+# `raw` dataset, and `articles` / `blogs` / `reports` are far too generic to
+# claim unqualified in a namespace shared with six other sources.
+
+sources:
+  - name: spaceflight_news
+    schema: raw
+    description: >
+      Landing tables written by include/pipelines/spaceflight_news_pipeline.py.
+      Loaded with write_disposition "merge" on the API's own integer `id`, so a
+      revised article updates its row rather than adding one, and re-running
+      the backfill is a no-op. The full archive is present: 35,436 articles,
+      2,056 blogs and 1,415 reports as of 2026-08-02, each matching the count
+      the API reports for itself.
+    tables:
+      - name: snapi_articles
+        description: >
+          One row per news article, from ~42 outlets. The bulk of the source.
+        columns:
+          - name: id
+            description: SNAPI's integer key. Stable across revisions.
+          - name: published_at
+            description: >
+              When the outlet published it. NOTE 59 rows carry a 1970-01-01
+              epoch default rather than a real date — an upstream data quality
+              artifact, preserved here rather than silently nulled.
+          - name: updated_at
+            description: >
+              When SNAPI last revised the record. This is the incremental
+              cursor field, not published_at.
+          - name: news_site
+            description: Outlet name, e.g. "SpaceNews", "NASASpaceflight".
+
+      - name: snapi_blogs
+        description: One row per blog post. Same shape as articles.
+
+      - name: snapi_reports
+        description: >
+          One row per status report. Same shape as articles MINUS `featured`,
+          which SNAPI does not return for this collection.
+
+      - name: snapi_articles__launches
+        description: >
+          Child table from the nested `launches` array — the cross-reference
+          from an article to the Launch Library 2 launches it covers. This is
+          the join that makes spaceflight_news and launch_library one dataset
+          rather than two, so unlike most dlt child tables it IS staged.
+        columns:
+          - name: launch_id
+            description: LL2 launch UUID. Joins to raw.ll2_launches.id.
+          - name: _dlt_parent_id
+            description: dlt's link back to the parent article's _dlt_id.
+
+      # Deliberately NOT staged, and left in `raw` until something needs them:
+      #   snapi_articles__authors   byline, one row per author per article
+      #   snapi_articles__events    article -> LL2 event cross-reference
+      #   snapi_blogs__authors, snapi_blogs__launches
+      # Same rule as nasa_donki: stage the parents, leave the attachments.

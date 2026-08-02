@@ -54,6 +54,12 @@ models:
       space_track:
         +tags: ["space_track"]
 
+      spaceflight_news:
+        +tags: ["spaceflight_news"]
+
+      launch_library:
+        +tags: ["launch_library"]
+
       # Computed rather than fetched — written by the conjunction screening
       # engine, which reads the staged catalogue rather than an API. Same
       # contract as any other source otherwise.
