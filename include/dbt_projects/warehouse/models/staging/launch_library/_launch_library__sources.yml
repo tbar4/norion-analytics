@@ -1,0 +1,80 @@
+version: 2
+
+# Launch Library 2 (The Space Devs). One sources file per onboarded source,
+# living beside that source's staging models.
+#
+# `raw` is the dlt dataset_name — dlt creates the schema in the Postgres
+# `warehouse` database and dbt reads from it, so the `schema:` below must match
+# `dataset_name` in include/pipelines/launch_library_pipeline.py.
+#
+# Table names carry an `ll2_` prefix because every pipeline here shares the one
+# `raw` dataset, and `launches` / `agencies` / `locations` are far too generic
+# to claim unqualified in a namespace shared with seven other sources.
+#
+# WHAT IS STAGED, AND WHAT IS DELIBERATELY NOT
+# --------------------------------------------
+# The pipeline lands 43 resources. Eight are staged here — the dimensional
+# backbone plus the launch catalogue. The rest are left in `raw` on purpose,
+# the same call nasa_donki makes with its child tables:
+#
+#   * The 29 `ll2_config_*` tables are enumerations (orbit types, launch
+#     statuses, agency types). Their content is already denormalised into the
+#     tables that reference them — a launch carries `status__name`, not just a
+#     status id — so staging them would add 29 models that nothing joins to.
+#   * dlt normalises nested arrays into child tables (`ll2_launches__program`,
+#     `ll2_pads__agencies__logo__variants`, and so on). Those are left until
+#     something actually needs them.
+#
+# NOTE ON FRESHNESS: this source fills in over several runs, not one. LL2
+# allows 15 requests/hour to this identity and a complete pass costs ~155, so
+# the pipeline checkpoints and resumes. Config tables and the cheaper
+# dimensions land first; `ll2_launches` is last and needs ~80 requests of its
+# own. Expect these tables to be absent, then partial, then complete.
+
+sources:
+  - name: launch_library
+    schema: raw
+    description: >
+      Landing tables written by include/pipelines/launch_library_pipeline.py.
+      Loaded with write_disposition "merge" on the API's own `id`, so a revised
+      record updates its row rather than adding one and a resumed run is a
+      no-op over what it already fetched. Nested objects are flattened by dlt
+      into `mission__name`-style columns; nested arrays become child tables.
+    tables:
+      - name: ll2_launches
+        description: >
+          One row per launch, past and scheduled. The centre of this source and
+          the most expensive table to load (~80 requests). Ordered by
+          `last_updated` rather than id, because its id is a UUID and would
+          insert randomly.
+        columns:
+          - name: id
+            description: LL2 UUID. Stable across revisions.
+          - name: net
+            description: >
+              No Earlier Than — the launch time. Precision varies wildly and is
+              described by `net_precision__name`: a value may mean "this
+              second" or "some time this year". Do not treat it as exact
+              without checking that field.
+          - name: last_updated
+            description: >
+              When LL2 last revised the record. This is the incremental cursor
+              field.
+      - name: ll2_agencies
+        description: One row per launch agency, operator or manufacturer.
+      - name: ll2_pads
+        description: >
+          One row per launch pad, carrying its location denormalised.
+      - name: ll2_locations
+        description: One row per launch site (a location holds many pads).
+      - name: ll2_launcher_configurations
+        description: >
+          One row per rocket configuration — the specific variant flown, not
+          the family. This is what a launch's `rocket__configuration__*`
+          columns point at.
+      - name: ll2_programs
+        description: One row per program (Artemis, Commercial Crew, ...).
+      - name: ll2_spacecraft
+        description: One row per spacecraft airframe, with its flight history.
+      - name: ll2_astronauts
+        description: One row per astronaut.

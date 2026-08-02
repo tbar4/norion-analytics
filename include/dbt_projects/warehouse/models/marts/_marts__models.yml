@@ -314,3 +314,57 @@ models:
           blogs and reports — SNAPI only carries the link for articles.
         data_tests:
           - not_null
+
+  - name: launch_events
+    description: >
+      One row per launch, past and scheduled, from Launch Library 2. The
+      business-facing view of the launch catalogue, joined to the agency
+      dimension for the provider's type and founding year.
+
+      FILLS IN OVER SEVERAL RUNS. LL2 allows 15 requests/hour to this identity
+      and a complete pass costs ~155, so the pipeline checkpoints and resumes.
+      This mart is legitimately partial until the catch-up finishes; a low row
+      count is expected during that window, not a defect.
+    columns:
+      - name: launch_id
+        description: LL2 UUID. Stable across revisions.
+        data_tests:
+          - unique
+          - not_null
+      - name: launch_name
+        data_tests:
+          - not_null
+      - name: net
+        description: >
+          No Earlier Than — the launch time. ALWAYS read with net_is_exact:
+          LL2 reports precision in a separate field, so a net of
+          2026-12-31T00:00:00 with precision "Year" means "some time in 2026",
+          not midnight on New Year's Eve.
+      - name: net_is_exact
+        description: >
+          True when LL2's stated precision is Second, Minute or Hour. False
+          means the timestamp is a placeholder standing in for a day, month,
+          quarter or year — do not put those on a timeline as if they were
+          scheduled to the second.
+        data_tests:
+          - not_null
+      - name: is_success
+        description: >
+          Status is exactly "Launch Successful". A launch still scheduled or in
+          progress is neither a success nor a failure, so this and is_failure
+          are both false for the forward manifest.
+        data_tests:
+          - not_null
+      - name: is_failure
+        description: Status is "Launch Failure" or "Partial Failure".
+        data_tests:
+          - not_null
+      - name: has_launched
+        description: net is in the past. Separates history from the manifest.
+        data_tests:
+          - not_null
+      - name: provider_agency_type
+        description: >
+          From the agency dimension, NULL when that agency has not loaded yet.
+          The join is LEFT on purpose — under a request budget the launch
+          catalogue and the agency dimension need not complete in the same run.

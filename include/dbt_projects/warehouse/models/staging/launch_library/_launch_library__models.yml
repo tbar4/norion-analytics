@@ -1,0 +1,90 @@
+version: 2
+
+# Tests live on MODELS, not on sources: source tests never run under Cosmos,
+# so a test written there is silently dead. Same convention as every other
+# source here.
+#
+# The tests are deliberately thin — uniqueness and presence of each entity's
+# key. This source fills in over several runs (15 requests/hour upstream), so a
+# table can legitimately be partial for a few days. A row-count or completeness
+# test would fail for reasons that are expected rather than wrong.
+
+models:
+  - name: stg_launch_library__launches
+    description: >
+      One row per launch, past and scheduled. Typed 1:1 over raw.ll2_launches.
+    columns:
+      - name: launch_id
+        description: LL2 UUID. Stable across revisions.
+        data_tests:
+          - unique
+          - not_null
+      - name: net
+        description: >
+          No Earlier Than — the launch time. Precision varies and is described
+          by net_precision_name: a value may mean "this second" or "some time
+          this year". Not null-tested, because far-future launches legitimately
+          carry a placeholder.
+      - name: status_name
+        description: Current launch status, e.g. "Launch Successful", "TBD".
+
+  - name: stg_launch_library__agencies
+    description: One row per launch agency, operator or manufacturer.
+    columns:
+      - name: agency_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_launch_library__pads
+    description: One row per launch pad, carrying its location denormalised.
+    columns:
+      - name: pad_id
+        data_tests:
+          - unique
+          - not_null
+      - name: location_id
+        description: >
+          The site this pad belongs to. Not a foreign-key test: pads can load
+          before locations do, since the two are separate resources under a
+          request budget.
+
+  - name: stg_launch_library__locations
+    description: One row per launch site. A location holds many pads.
+    columns:
+      - name: location_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_launch_library__launcher_configurations
+    description: One row per rocket configuration — the variant flown.
+    columns:
+      - name: launcher_configuration_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_launch_library__programs
+    description: One row per program (Artemis, Commercial Crew, ...).
+    columns:
+      - name: program_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_launch_library__spacecraft
+    description: One row per spacecraft airframe, with its flight history.
+    columns:
+      - name: spacecraft_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: stg_launch_library__astronauts
+    description: One row per astronaut.
+    columns:
+      - name: astronaut_id
+        data_tests:
+          - unique
+          - not_null

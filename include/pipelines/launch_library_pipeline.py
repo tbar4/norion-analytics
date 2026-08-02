@@ -39,6 +39,25 @@ Three consequences, and every awkward thing in this module follows from them:
      `config/launch_statuses`) change perhaps yearly, so re-reading them daily
      would burn the entire budget on data that has not moved.
 
+NOTHING LANDS IN POSTGRES UNTIL THE RUN FINISHES, and a budget-limited run is
+mostly sleep. dlt does extract -> normalize -> load, so a 60-request run spends
+~4 hours extracting (15 requests, wait an hour, 15 more) and writes to the
+warehouse only at the end. Two consequences worth knowing before debugging:
+
+  * A run that is still going has produced NO raw tables yet. That is normal,
+    not a stall. Watch the task log, not `\\dt raw.ll2_*`.
+  * If the task is KILLED mid-extract — execution_timeout, a worker restart —
+    the page checkpoints are lost with it, because dlt commits state as part of
+    the load step. The next run then restarts the catch-up from offset 0.
+    Nothing is corrupted and no data is wrong, but up to a run's worth of
+    rate-limit budget is wasted, and at 15 requests/hour that is expensive.
+
+    The fix, if that ever actually bites, is to call pipeline.run() once per
+    batch of resources instead of once for all of them, so state and data
+    commit several times per run. It is deliberately NOT done here yet: the
+    single-run form is what has been verified end to end, and the rate limit
+    makes re-verifying a restructure a multi-hour exercise.
+
 NO HISTORICAL BACKFILL, BY REQUEST AND BY NATURE. Unlike spaceflight_news,
 nothing here is backfilled over a date range. These endpoints are dimensional:
 they expose current state, not an append-only history, so there is no archive

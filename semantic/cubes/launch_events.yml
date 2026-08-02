@@ -1,0 +1,276 @@
+# Cube for analytics.launch_events — the dbt mart built by the launch_library
+# DAG.
+#
+# Defined over the MART, not raw.ll2_launches. The agency join and the four
+# derived flags live in dbt where they are tested; this file only names
+# measures and dimensions over the result.
+#
+# `sql_table` is schema-qualified because Cube connects to the `warehouse`
+# database with no search_path set — an unqualified name would resolve to
+# public and fail.
+
+cubes:
+  - name: launch_events
+    sql_table: analytics.launch_events
+    title: "Launches"
+    description: >
+      Every launch Launch Library 2 knows about, past and scheduled, with its
+      mission, rocket, provider and pad. One row per launch.
+
+      NOTE this table fills in over several runs. LL2 allows 15 requests/hour
+      to this identity and a complete pass costs ~155, so the pipeline
+      checkpoints and resumes across days. A low count is expected during the
+      catch-up rather than a fault.
+
+    dimensions:
+      - name: launch_id
+        sql: launch_id
+        type: string
+        primary_key: true
+        # A UUID — not interesting to browse, so hidden, the same call
+        # spaceflight_news_items makes for its surrogate key.
+        public: false
+
+      - name: launch_name
+        sql: launch_name
+        type: string
+        title: "Launch"
+        description: 'Rocket and payload, e.g. "Falcon 9 Block 5 | Starlink".'
+
+      - name: net
+        sql: net
+        type: time
+        title: "Launch Time (NET)"
+        description: >
+          No Earlier Than. ALWAYS read with net_is_exact — LL2 reports
+          precision separately, so a net of 2026-12-31T00:00:00 with precision
+          "Year" means "some time in 2026", not New Year's Eve. Charting
+          imprecise nets on a timeline is the standard mistake with this source.
+
+      - name: net_precision_name
+        sql: net_precision_name
+        type: string
+        title: "NET Precision"
+        description: 'How exact net is — "Second", "Hour", "Day", "Year", ...'
+
+      - name: net_is_exact
+        sql: net_is_exact
+        type: boolean
+        title: "NET Is Exact"
+        description: >
+          True when precision is Second, Minute or Hour. Filter on this before
+          putting launches on a time axis.
+
+      - name: window_start
+        sql: window_start
+        type: time
+        title: "Window Start"
+
+      - name: window_end
+        sql: window_end
+        type: time
+        title: "Window End"
+
+      - name: last_updated
+        sql: last_updated
+        type: time
+        title: "Last Updated"
+        description: >
+          When LL2 last revised the record. This is the pipeline's incremental
+          cursor, so it also tracks when a row was last seen.
+
+      - name: status_name
+        sql: status_name
+        type: string
+        title: "Status"
+        description: '"Launch Successful", "Go for Launch", "TBD", ...'
+
+      - name: status_abbrev
+        sql: status_abbrev
+        type: string
+        title: "Status Abbrev"
+
+      - name: mission_name
+        sql: mission_name
+        type: string
+        title: "Mission"
+
+      - name: mission_type
+        sql: mission_type
+        type: string
+        title: "Mission Type"
+        description: 'e.g. "Resupply", "Communications", "Earth Science".'
+
+      - name: orbit_name
+        sql: orbit_name
+        type: string
+        title: "Target Orbit"
+
+      - name: orbit_abbrev
+        sql: orbit_abbrev
+        type: string
+        title: "Orbit Abbrev"
+        description: 'LEO, GTO, SSO, ...'
+
+      - name: rocket_configuration_name
+        sql: rocket_configuration_name
+        type: string
+        title: "Rocket"
+
+      - name: rocket_configuration_full_name
+        sql: rocket_configuration_full_name
+        type: string
+        title: "Rocket (Full Name)"
+
+      - name: launch_service_provider_name
+        sql: launch_service_provider_name
+        type: string
+        title: "Provider"
+
+      - name: launch_service_provider_abbrev
+        sql: launch_service_provider_abbrev
+        type: string
+        title: "Provider Abbrev"
+
+      - name: launch_service_provider_type
+        sql: launch_service_provider_type
+        type: string
+        title: "Provider Type"
+        description: '"Commercial" or "Government".'
+
+      - name: provider_agency_type
+        sql: provider_agency_type
+        type: string
+        title: "Provider Agency Type"
+        description: >
+          From the agency dimension. NULL when that agency has not loaded yet —
+          the mart's join is LEFT on purpose, because the launch catalogue and
+          the agency dimension need not complete in the same run.
+
+      - name: pad_name
+        sql: pad_name
+        type: string
+        title: "Pad"
+
+      - name: pad_location_name
+        sql: pad_location_name
+        type: string
+        title: "Launch Site"
+
+      - name: pad_country_name
+        sql: pad_country_name
+        type: string
+        title: "Country"
+
+      - name: pad_latitude
+        sql: pad_latitude
+        type: number
+        title: "Pad Latitude"
+
+      - name: pad_longitude
+        sql: pad_longitude
+        type: number
+        title: "Pad Longitude"
+
+      - name: is_success
+        sql: is_success
+        type: boolean
+        title: "Succeeded"
+        description: >
+          Status is exactly "Launch Successful". Both this and is_failure are
+          false for anything still scheduled — absence of success is not
+          failure here.
+
+      - name: is_failure
+        sql: is_failure
+        type: boolean
+        title: "Failed"
+
+      - name: has_launched
+        sql: has_launched
+        type: boolean
+        title: "Has Launched"
+        description: net is in the past. Separates history from the manifest.
+
+      - name: webcast_live
+        sql: webcast_live
+        type: boolean
+        title: "Webcast Live"
+
+      - name: fail_reason
+        sql: fail_reason
+        type: string
+        title: "Failure Reason"
+        description: Empty string rather than NULL for most rows.
+
+      # dlt's load lineage, carried through every dbt layer. Filtering on this
+      # isolates the rows a single pipeline run produced.
+      - name: dlt_load_id
+        sql: _dlt_load_id
+        type: string
+        title: "dlt Load ID"
+
+    measures:
+      - name: count
+        type: count
+        title: "Launches"
+
+      - name: launched_count
+        type: count
+        title: "Launched"
+        description: Launches whose NET is in the past.
+        filters:
+          - sql: "{CUBE}.has_launched"
+
+      - name: upcoming_count
+        type: count
+        title: "Upcoming"
+        filters:
+          - sql: "NOT {CUBE}.has_launched"
+
+      - name: success_count
+        type: count
+        title: "Successful"
+        filters:
+          - sql: "{CUBE}.is_success"
+
+      - name: failure_count
+        type: count
+        title: "Failed"
+        filters:
+          - sql: "{CUBE}.is_failure"
+
+      - name: exact_net_count
+        type: count
+        title: "Precisely Scheduled"
+        description: Launches whose NET is exact to the hour or better.
+        filters:
+          - sql: "{CUBE}.net_is_exact"
+
+      - name: provider_count
+        sql: launch_service_provider_name
+        type: count_distinct
+        title: "Distinct Providers"
+
+      - name: first_launch
+        sql: net
+        type: min
+        title: "Earliest Launch"
+
+      - name: last_launch
+        sql: net
+        type: max
+        title: "Latest Launch"
+
+    # NO PRE-AGGREGATION, deliberately — the same call apod_daily makes.
+    #
+    # The complete catalogue is ~7,954 launches. Postgres answers any grouping
+    # of that in milliseconds, so a rollup would be ceremony rather than
+    # caching, and it would add a refresh_key to keep correct for no gain.
+    #
+    # Add one if this cube ever gains per-launch child rows (events, timelines,
+    # docking) and grows by an order of magnitude. If you do, key refresh_key
+    # on MAX(_dlt_load_id::numeric) — never on net or last_updated. A resumed
+    # catch-up loads old launches whose timestamps are also old, so a
+    # business-timestamp key would never move and the rollup would serve
+    # pre-catch-up numbers forever with nothing erroring.
