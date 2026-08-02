@@ -1,5 +1,15 @@
 """NASA Astronomy Picture of the Day -> Postgres schema `raw`.
 
+One day per run. The day comes from the run's own data interval, so re-running
+an interval fetches the same date and merges over its own previous row — the
+run is idempotent. Backfills go through the `start_date`/`end_date` params,
+which the loader slices into 30-day requests.
+
+This replaced a trailing 365-day window on 2026-08-02. That window was the
+cause of this DAG's 500s: api.nasa.gov takes over 30 seconds to answer a
+year-wide APOD query and the gateway times it out. The query was valid — just
+too slow, deterministically. See the pipeline module docstring for timings.
+
 Credentials live in Airflow, not in .dlt/secrets.toml: the `NASA_API_KEY`
 Variable and the `norion-analytics-pg` Connection. This DAG reads both and
 hands them to the pipeline explicitly, so the pipeline module itself stays
@@ -80,11 +90,6 @@ render_config = RenderConfig(
     dbt_executable_path="/opt/dbt-venv/bin/dbt",
 )
 
-# APOD publishes once a day. A trailing window on every run means a late or
-# corrected entry gets picked up rather than being missed permanently.
-DAYS_BACK = 365
-
-
 @dag(
     dag_id="nasa_apod",
     schedule="0 6 * * *",
@@ -96,27 +101,47 @@ DAYS_BACK = 365
     max_active_runs=1,
     tags=["dlt", "nasa", "raw"],
     doc_md=__doc__,
+    # Load one specific past day by hand:
+    #   airflow dags trigger nasa_apod -c '{"date": "2026-07-20"}'
+    #
+    # Or backfill a range, which the loader slices into 30-day requests:
+    #   airflow dags trigger nasa_apod \
+    #     -c '{"start_date": "1995-06-16", "end_date": "2025-08-01"}'
+    params={"date": None, "start_date": None, "end_date": None},
 )
 def nasa_apod():
-    # api.nasa.gov returns intermittent 500s on the full-year range. dlt already
-    # retries inside the request (its default covers 429 and all 5xx) and that is
-    # not enough: on 2026-07-29 the task retried for 2m52s and still failed,
-    # because the outage lasted minutes rather than seconds.
+    # api.nasa.gov returns intermittent 500s. dlt already retries inside the
+    # request (its default covers 429 and all 5xx) and that is not always
+    # enough: on 2026-07-29 the task retried for 2m52s and still failed.
     #
     # So the retry that matters is at the orchestrator layer — come back in ten
-    # minutes, by which time NASA has recovered. dlt handles per-request blips;
-    # Airflow handles "the upstream was down for a while".
+    # minutes. dlt handles per-request blips; Airflow handles "the upstream was
+    # down for a while".
+    #
+    # Note this is now a backstop rather than the main defence. The 500s that
+    # dominated this DAG's history were not blips: a 365-day window takes over
+    # 30s upstream and times out into a 500 *every* time, so no retry schedule
+    # could ever have cleared them. One day per run is the actual fix.
     @task(retries=3, retry_delay=timedelta(minutes=10))
     def load() -> str:
         # Imported inside the task so a broken pipeline module can't stop the
         # whole DAG file from parsing.
+        import logging
+
         from airflow.hooks.base import BaseHook
         from airflow.models import Variable
+        from airflow.sdk import get_current_context
 
         from pipelines.nasa_apod_pipeline import load_apod
 
+        log = logging.getLogger(__name__)
+        context = get_current_context()
+        params = context.get("params") or {}
+
         conn = BaseHook.get_connection(POSTGRES_CONN_ID)
         credentials = {
+            # Airflow's `schema` field is the DATABASE name, not a Postgres
+            # schema. That naming trap is Airflow's, not ours.
             "database": conn.schema,
             "username": conn.login,
             "password": conn.password,
@@ -124,11 +149,60 @@ def nasa_apod():
             "port": conn.port or 5432,
         }
 
-        return load_apod(
-            api_key=Variable.get(NASA_API_KEY_VAR),
-            credentials=credentials,
-            days_back=DAYS_BACK,
-        )
+        common = {
+            "api_key": Variable.get(NASA_API_KEY_VAR),
+            "credentials": credentials,
+        }
+
+        # An explicit range wins: this is the backfill path.
+        if params.get("start_date") or params.get("end_date"):
+            log.info(
+                "Backfilling APOD %s..%s in chunks.",
+                params.get("start_date"),
+                params.get("end_date"),
+            )
+            return load_apod(
+                start_date=params.get("start_date"),
+                end_date=params.get("end_date"),
+                **common,
+            )
+
+        # Otherwise one day. The override exists so a single missed day can be
+        # replayed without triggering a whole range.
+        target = params.get("date")
+        if target:
+            log.info("Loading APOD for explicit date=%s.", target)
+        else:
+            # The run's own day, not wall-clock now. This is what makes the DAG
+            # idempotent: re-running an interval asks for the same date and
+            # merges over its own previous row.
+            #
+            # data_interval_END, not start. The interval for the 06:00 run on
+            # day D spans D-1 06:00 .. D 06:00, so `start` would be yesterday
+            # and the table would permanently trail a day behind. APOD publishes
+            # at 00:00 ET (04:00-05:00 UTC), so by 06:00 UTC day D's entry is up.
+            #
+            # In Airflow 3.3 a MANUAL run has logical_date and data_interval set
+            # to NULL, so this cannot be assumed present — same trap documented
+            # in conjunction_screening.
+            interval_end = getattr(context.get("dag_run"), "data_interval_end", None)
+            if interval_end is None:
+                # Ad-hoc manual run with no interval and no override. Fall back
+                # to today so the trigger still does something useful, but say
+                # plainly that this run is not reproducible.
+                import pendulum
+
+                target = pendulum.now("UTC").to_date_string()
+                log.warning(
+                    "Manual run with no data interval and no date param. "
+                    "Loading today (%s); this run is NOT reproducible.",
+                    target,
+                )
+            else:
+                target = interval_end.date().isoformat()
+                log.info("Loading APOD for data_interval_end date=%s.", target)
+
+        return load_apod(date=target, **common)
 
     dbt_models = DbtTaskGroup(
         group_id="dbt_warehouse",

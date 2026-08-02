@@ -15,8 +15,11 @@ sources:
     schema: raw
     description: >
       Landing tables written by include/pipelines/nasa_apod_pipeline.py.
-      Loaded with write_disposition "replace" over a trailing date window, so
-      the table is a full snapshot of that window rather than an append log.
+      Loaded with write_disposition "merge" on the natural key `date`, one day
+      per scheduled run, so the archive accumulates across runs rather than
+      being a snapshot of a trailing window. Merge is load-bearing: under the
+      previous "replace" disposition a one-day run would truncate the table to
+      a single row.
     tables:
       - name: apod
         description: >

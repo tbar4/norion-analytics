@@ -32,6 +32,40 @@ Every response is a bare JSON array with no envelope, hence
 `data_selector: "$"`, and none of them paginate — the startDate/endDate window
 *is* the volume control. There is no page size to tune.
 
+WINDOW WIDTH IS THE WHOLE BALLGAME. DONKI has no `date=` parameter — startDate
+and endDate are the only controls — and its response time scales with the width
+of the window. Measured against the live API on 2026-08-02:
+
+    resource        window      time    rows
+    CME             1 day       0.4s       0
+    CME             7 days      1.5s      29
+    CME            30 days      5.9s     145
+    CME           365 days     55.1s    1818   <- 503s whenever NASA is loaded
+
+This DAG used a 365-day window, which is the entire explanation for the 503s in
+the nasa_donki logs. The query is well-formed and does return 200 on a good
+day; it is just slow enough to sit on the gateway's timeout, so it fails
+whenever the upstream is under any load. CME is the resource that trips first
+because it is by far the largest.
+
+The window is now anchored to the RUN'S OWN DATA INTERVAL rather than to
+wall-clock now, which is what makes a run idempotent: re-running an interval
+requests the same dates and merges over its own previous output.
+
+It is a short window rather than a single day, deliberately. Two properties of
+DONKI make a strict one-day window lossy:
+
+  * Events accumulate through the day. A run at 07:00 that asked only for its
+    own date would capture nothing published later that day, and under a
+    one-day-per-run schedule nothing would ever go back for the remainder.
+  * Events are REVISED after publication (`versionId`, `submissionTime`). A
+    revision does not move the event's date, so only a window that re-covers
+    that date picks it up.
+
+`LOOKBACK_DAYS` days of overlap fixes both, costs about 1.5 seconds, and stays
+idempotent because the window is a pure function of the interval, not of when
+the run happened to execute. Set it to 0 for a strict single-day window.
+
 Two deliberate differences from nasa_apod:
 
   * `write_disposition` is "merge", not "replace". DONKI records carry
@@ -65,12 +99,25 @@ directory named dlt/ would shadow the installed dlt library.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Optional
 
 import dlt
 from dlt.common.pendulum import pendulum
 from dlt.sources.rest_api import RESTAPIConfig, rest_api_resources
+
+logger = logging.getLogger(__name__)
+
+# Days of overlap a routine run re-covers behind its own date, so that events
+# published late in a day and events revised after publication both land. See
+# the module docstring. 0 gives a strict single-day window.
+LOOKBACK_DAYS = 7
+
+# Widest window issued in one request when backfilling. 30 days answers in
+# about 6 seconds and 365 sits on the gateway timeout, so this leaves room for
+# a slow day upstream without making a long backfill excessively chatty.
+CHUNK_DAYS = 30
 
 # resource name -> (path, primary key). The single place this mapping lives;
 # adding a DONKI service means adding one row here and nothing else.
@@ -109,10 +156,14 @@ def nasa_donki_source(
     api_key: str = dlt.secrets.value,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    days_back: int = 30,
+    days_back: int = LOOKBACK_DAYS,
     base_url: str = "https://api.nasa.gov/DONKI/",
 ) -> Any:
-    """Every DONKI space weather service over a date range.
+    """Every DONKI space weather service over one bounded date window.
+
+    Callers should keep the window under about 30 days — see the module
+    docstring for why. `load_donki` slices longer backfills into `CHUNK_DAYS`
+    chunks so that stays true without the caller having to think about it.
 
     Args:
         api_key: NASA API key. Auto-loaded from secrets.toml under
@@ -121,17 +172,17 @@ def nasa_donki_source(
             anonymous caller*, so it rate-limits almost immediately — and this
             source makes eleven requests per run.
         start_date: First day to load, "YYYY-MM-DD". Defaults to `days_back`
-            days before end_date. Pass an early date to backfill the archive.
+            days before end_date.
         end_date: Last day to load, "YYYY-MM-DD". Defaults to today (UTC).
-        days_back: Window size used only when start_date is omitted. DONKI's
-            own default is 30 days; kept here so a routine run stays small
-            while merge accumulates history across runs.
+            Airflow passes the run's own interval here rather than letting this
+            default fire, which is what makes a scheduled run reproducible.
+        days_back: Window size used only when start_date is omitted.
         base_url: API root. Override only for testing against a mock.
 
     Examples:
-        nasa_donki_source()                            # trailing 30 days
-        nasa_donki_source(days_back=7)                 # smoke test
-        nasa_donki_source(start_date="2010-01-01")     # backfill the archive
+        nasa_donki_source(end_date="2026-08-01")               # 7-day window
+        nasa_donki_source(start_date="2026-08-01",
+                          end_date="2026-08-01")               # single day
     """
     if end_date is None:
         end_date = pendulum.now("UTC").to_date_string()
@@ -180,26 +231,29 @@ def load_donki(
     credentials: Optional[dict] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    days_back: int = 30,
+    days_back: int = LOOKBACK_DAYS,
     dev_mode: bool = False,
 ) -> str:
     """Load every DONKI service into the Postgres schema `raw`. Returns load info.
+
+    Any window wider than `CHUNK_DAYS` is SLICED and run as one load per chunk.
+    That slicing is the point: a single 365-day request takes 55 seconds and
+    503s whenever NASA is under load (see the module docstring). Every mode
+    merges on each event's natural key, so overlapping chunks and re-runs
+    converge on the same table rather than duplicating rows.
 
     Args:
         api_key: NASA key. Omit to fall back to secrets.toml (local runs).
         credentials: Postgres connection as a dict of database/username/
             password/host/port. Omit to fall back to secrets.toml. The Airflow
             DAG builds this from the `norion-analytics-pg` Connection.
+        start_date: First day to load. Defaults to `days_back` before end_date.
+        end_date: Last day to load. Defaults to today (UTC).
+        days_back: Window size used only when start_date is omitted.
         dev_mode: Load into a fresh timestamped dataset instead of `raw`.
             Useful for iterating, but invisible to anything reading `raw`, so
             leave it False for anything Airflow calls.
     """
-    # Omitted args must stay *absent* rather than None, or an explicit None
-    # would override dlt's secrets.toml resolution instead of deferring to it.
-    source_kwargs = {"start_date": start_date, "end_date": end_date, "days_back": days_back}
-    if api_key is not None:
-        source_kwargs["api_key"] = api_key
-
     destination = dlt.destinations.postgres(credentials=credentials) if credentials else "postgres"
 
     pipeline = dlt.pipeline(
@@ -210,8 +264,48 @@ def load_donki(
         dev_mode=dev_mode,
     )
 
-    info = pipeline.run(nasa_donki_source(**source_kwargs))
-    return str(info)
+    last = pendulum.parse(end_date) if end_date else pendulum.now("UTC")
+    first = pendulum.parse(start_date) if start_date else last.subtract(days=days_back)
+
+    chunks = max(1, -(-((last - first).days + 1) // CHUNK_DAYS))
+    if chunks > 1:
+        # Every chunk costs one request PER RESOURCE, and there are eleven of
+        # them. A backfill to DONKI's 2010 archive is roughly 195 chunks, i.e.
+        # ~2,100 requests — over NASA's 1,000/hour limit, which answers with 429
+        # rather than failing loudly. Say so up front instead of letting a long
+        # backfill quietly degrade halfway through.
+        logger.info(
+            "DONKI backfill %s..%s: %d chunks x %d resources = ~%d requests. "
+            "NASA's limit is 1,000/hour; split the range if this exceeds it.",
+            first.to_date_string(),
+            last.to_date_string(),
+            chunks,
+            len(DONKI_RESOURCES),
+            chunks * len(DONKI_RESOURCES),
+        )
+
+    infos: list[str] = []
+    cursor = first
+    while cursor <= last:
+        chunk_end = min(cursor.add(days=CHUNK_DAYS - 1), last)
+        # Omitted args must stay *absent* rather than None, or an explicit None
+        # would override dlt's secrets.toml resolution instead of deferring.
+        source_kwargs: dict = {
+            "start_date": cursor.to_date_string(),
+            "end_date": chunk_end.to_date_string(),
+        }
+        if api_key is not None:
+            source_kwargs["api_key"] = api_key
+
+        logger.info(
+            "DONKI window %s..%s", cursor.to_date_string(), chunk_end.to_date_string()
+        )
+        infos.append(str(pipeline.run(nasa_donki_source(**source_kwargs))))
+        cursor = chunk_end.add(days=1)
+
+    if len(infos) > 1:
+        logger.info("DONKI backfill complete: %d chunks.", len(infos))
+    return "\n".join(infos)
 
 
 if __name__ == "__main__":

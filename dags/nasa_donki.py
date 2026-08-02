@@ -4,6 +4,17 @@ Loads all eleven DONKI component services — CME, CMEAnalysis, GST, IPS, FLR,
 SEP, MPC, RBE, HSS, WSAEnlilSimulations and notifications — as resources of a
 single dlt source. One DAG, one dbt tag, one state directory.
 
+A short window per run, ending at the run's own data interval rather than at
+wall-clock now, so re-running an interval requests the same dates and merges
+over its own previous output. Backfills go through the `start_date`/`end_date`
+params, which the loader slices into 30-day requests.
+
+This replaced a trailing 365-day window on 2026-08-02. That window was the
+cause of this DAG's 503s: a year-wide DONKI/CME query takes 55 seconds upstream
+and sits on the gateway's timeout, so it failed whenever NASA was under any
+load. The query was valid — just too slow. See the pipeline module docstring
+for measured timings and for why the window is a few days rather than one.
+
 Credentials live in Airflow, not in .dlt/secrets.toml: the `NASA_API_KEY`
 Variable and the `norion-analytics-pg` Connection. This DAG reads both and
 hands them to the pipeline explicitly, so the pipeline module itself stays free
@@ -74,14 +85,6 @@ render_config = RenderConfig(
     dbt_executable_path="/opt/dbt-venv/bin/dbt",
 )
 
-# A trailing year on every run. The pipeline merges on each event's natural
-# key, so a wide window is not wasteful the way it would be under `replace` —
-# it re-reads recent history and overwrites any event NASA has revised, while
-# older events already loaded simply stay put. Volumes are small: roughly 1,200
-# CMEs and 700 flares a year.
-DAYS_BACK = 365
-
-
 @dag(
     dag_id="nasa_donki",
     # 07:00, an hour after nasa_apod, so the two do not hit api.nasa.gov with
@@ -94,23 +97,42 @@ DAYS_BACK = 365
     max_active_runs=1,
     tags=["dlt", "nasa", "space-weather", "raw"],
     doc_md=__doc__,
+    # Backfill a range by hand. The loader slices it into 30-day requests, so
+    # a multi-year range is safe to ask for:
+    #   airflow dags trigger nasa_donki \
+    #     -c '{"start_date": "2010-01-01", "end_date": "2020-12-31"}'
+    params={"start_date": None, "end_date": None},
 )
 def nasa_donki():
     # api.nasa.gov returns intermittent 500s. dlt already retries inside the
     # request and that is not always enough — an outage lasting minutes
     # exhausts its attempts. This source makes eleven requests per run, so it
     # has eleven chances to hit one. Retry the whole task later instead.
+    #
+    # This is a backstop, not the main defence. The 503s that dominated this
+    # DAG's history came from the 365-day window taking 55 seconds upstream and
+    # sitting on the gateway timeout — a deterministic failure no retry
+    # schedule could clear. The bounded window is the actual fix.
     @task(retries=3, retry_delay=timedelta(minutes=10))
     def load() -> str:
         # Imported inside the task so a broken pipeline module can't stop the
         # whole DAG file from parsing.
+        import logging
+
         from airflow.hooks.base import BaseHook
         from airflow.models import Variable
+        from airflow.sdk import get_current_context
 
         from pipelines.nasa_donki_pipeline import load_donki
 
+        log = logging.getLogger(__name__)
+        context = get_current_context()
+        params = context.get("params") or {}
+
         conn = BaseHook.get_connection(POSTGRES_CONN_ID)
         credentials = {
+            # Airflow's `schema` field is the DATABASE name, not a Postgres
+            # schema. That naming trap is Airflow's, not ours.
             "database": conn.schema,
             "username": conn.login,
             "password": conn.password,
@@ -118,10 +140,38 @@ def nasa_donki():
             "port": conn.port or 5432,
         }
 
+        window: dict = {}
+        if params.get("start_date") or params.get("end_date"):
+            # Explicit backfill.
+            window = {
+                "start_date": params.get("start_date"),
+                "end_date": params.get("end_date"),
+            }
+            log.info("Backfilling DONKI %s..%s in chunks.", window["start_date"], window["end_date"])
+        else:
+            # End the window at the run's own interval rather than at
+            # wall-clock now. That is what makes the run idempotent: re-running
+            # an interval requests the same dates and merges over its own
+            # previous output. The pipeline's LOOKBACK_DAYS supplies the start.
+            #
+            # In Airflow 3.3 a MANUAL run has logical_date and data_interval set
+            # to NULL, so this cannot be assumed present — same trap documented
+            # in conjunction_screening.
+            interval_end = getattr(context.get("dag_run"), "data_interval_end", None)
+            if interval_end is None:
+                log.warning(
+                    "Manual run with no data interval and no date params. "
+                    "Loading the trailing window from now; this run is NOT "
+                    "reproducible."
+                )
+            else:
+                window = {"end_date": interval_end.date().isoformat()}
+                log.info("Loading DONKI window ending %s.", window["end_date"])
+
         return load_donki(
             api_key=Variable.get(NASA_API_KEY_VAR),
             credentials=credentials,
-            days_back=DAYS_BACK,
+            **window,
         )
 
     dbt_models = DbtTaskGroup(
