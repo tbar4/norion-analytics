@@ -9,6 +9,16 @@ cube names a mart in `sql_table` and mirrors its columns; rename a column in
 `include/dbt_projects/warehouse/models/marts/` and the cube breaks. When the
 two lived in separate repos, no review could catch that.
 
+Since 2026-08-02 CI checks the first half of that automatically. The `docs`
+workflow resolves every cube's `sql_table` against the dbt manifest and
+annotates the run when a cube names a table the project does not build; the
+mismatch is also rendered on the published Cube reference page. It **warns
+rather than fails**, on the grounds that a missing mart should degrade the docs
+rather than block them — pass `--strict` to `scripts/build_docs_site.py` to
+invert that. Note the limit: it compares *table* names, not columns. A renamed
+column still gets through, and still needs the query in "Verifying a change"
+below.
+
 ## Rules
 
 - **Cubes are defined over dbt marts, never over `raw` dlt tables.** The raw
