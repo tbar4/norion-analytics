@@ -214,9 +214,16 @@ class _Throttle:
         max_requests: int,
         api_key: Optional[str] = None,
         base_url: str = BASE_URL,
+        max_sleep_seconds: float = MAX_SLEEP_SECONDS,
     ) -> None:
         self.max_requests = max_requests
         self.base_url = base_url.rstrip("/")
+        # How long this run may wait for the window to roll over. Must be sized
+        # against the SCHEDULE, not just the budget: an hourly run that sleeps
+        # an hour overlaps its own next run, and max_active_runs=1 then starts
+        # skipping runs. A short ceiling makes the run give up cleanly and let
+        # the next one try, which costs nothing because checkpoints persist.
+        self.max_sleep = max_sleep_seconds
         self.spent = 0
         self.limit = FALLBACK_REQUEST_LIMIT
         self.window = float(FALLBACK_WINDOW_SECONDS)
@@ -284,10 +291,10 @@ class _Throttle:
                 return
 
             wait = self.window - (now - self._times[0]) + 1.0
-            if wait > MAX_SLEEP_SECONDS:
+            if wait > self.max_sleep:
                 raise BudgetExhausted(
                     f"next LL2 request would need a {wait:.0f}s wait, beyond the "
-                    f"{MAX_SLEEP_SECONDS:.0f}s this run will hold a worker for"
+                    f"{self.max_sleep:.0f}s this run will hold a worker for"
                 )
             logger.info("LL2 rate limit: sleeping %.0fs for budget.", wait)
             time.sleep(wait)
@@ -473,6 +480,7 @@ def launch_library_source(
     max_requests: int = 60,
     force_refresh: bool = False,
     base_url: str = BASE_URL,
+    max_sleep_seconds: float = MAX_SLEEP_SECONDS,
 ) -> Any:
     """LL2 dimensions and the launch catalogue, within a discovered budget.
 
@@ -492,7 +500,12 @@ def launch_library_source(
             never for a real load, which would fill `raw` with the mirror's
             sampled subset.
     """
-    throttle = _Throttle(max_requests=max_requests, api_key=api_key, base_url=base_url)
+    throttle = _Throttle(
+        max_requests=max_requests,
+        api_key=api_key,
+        base_url=base_url,
+        max_sleep_seconds=max_sleep_seconds,
+    )
     throttle.probe()
 
     # ORDER IS CHEAPEST-FIRST, and it matters because `extract.next_item_mode`
@@ -529,6 +542,7 @@ def load_launch_library(
     dev_mode: bool = False,
     destination_override: Optional[Any] = None,
     base_url: str = BASE_URL,
+    max_sleep_seconds: float = MAX_SLEEP_SECONDS,
 ) -> str:
     """Load Launch Library 2 into the Postgres schema `raw`. Returns load info.
 
@@ -546,6 +560,9 @@ def load_launch_library(
         destination_override: A dlt destination to use instead of Postgres, for
             smoke testing without warehouse credentials. Airflow never passes it.
         base_url: API root. Smoke testing only — see the source docstring.
+        max_sleep_seconds: Longest this run waits for rate-limit budget. Size
+            it against the SCHEDULE: ~900 for an hourly run, the 3700 default
+            for a daily one.
     """
     if destination_override is not None:
         destination: Any = destination_override
@@ -580,6 +597,7 @@ def load_launch_library(
             max_requests=max_requests,
             force_refresh=force_refresh,
             base_url=base_url,
+            max_sleep_seconds=max_sleep_seconds,
         )
     )
     return str(info)
